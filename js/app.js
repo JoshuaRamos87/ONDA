@@ -4,6 +4,7 @@
  * station details modal, favorites sync, browser history, and keyboard navigation.
  */
 
+import { APP_CONFIG } from './config.js';
 import { radioApi } from './api.js';
 import { radioPlayer } from './player.js';
 import { storage } from './storage.js';
@@ -101,11 +102,12 @@ const state = {
   directoriesLoaded: false,
   directoriesError: false,
 
-  // Active playback queue & modal tracking
+  // Active playback queue, modal & PWA tracking
   queue: [],
   modalStation: null,
   lastFocusedEl: null,
   votedUuids: new Set(),
+  deferredInstallPrompt: null,
 };
 
 /* ==========================================================================
@@ -126,6 +128,10 @@ const dom = {
   surpriseBtn: document.getElementById('surprise-btn'),
   surpriseIcon: document.getElementById('surprise-icon'),
   surpriseSpinner: document.getElementById('surprise-spinner'),
+  installAppBtn: document.getElementById('install-app-btn'),
+  aboutBtn: document.getElementById('about-btn'),
+  footerAboutBtn: document.getElementById('footer-about-btn'),
+  footerVersion: document.getElementById('footer-version'),
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
   themeIconSun: document.getElementById('theme-icon-sun'),
   themeIconMoon: document.getElementById('theme-icon-moon'),
@@ -217,7 +223,7 @@ const dom = {
   volIconMuted: document.getElementById('vol-icon-muted'),
   volumeSlider: document.getElementById('volume-slider'),
 
-  // Modal & Toast
+  // Modals & Toast
   modal: document.getElementById('station-modal'),
   modalArt: document.getElementById('modal-art'),
   modalTitle: document.getElementById('modal-station-title'),
@@ -226,6 +232,21 @@ const dom = {
   modalSpecs: document.getElementById('modal-specs'),
   modalActions: document.getElementById('modal-actions'),
   modalCloseBtn: document.getElementById('modal-close-btn'),
+
+  aboutModal: document.getElementById('about-modal'),
+  aboutCloseBtn: document.getElementById('about-close-btn'),
+  aboutModalTitle: document.getElementById('about-modal-title'),
+  aboutVersionBadge: document.getElementById('about-version-badge'),
+  aboutTagline: document.getElementById('about-tagline'),
+  aboutSpecVersion: document.getElementById('about-spec-version'),
+  aboutSpecMode: document.getElementById('about-spec-mode'),
+  aboutSpecMirror: document.getElementById('about-spec-mirror'),
+  aboutSpecRepo: document.getElementById('about-spec-repo'),
+  aboutRepoBtn: document.getElementById('about-repo-btn'),
+  aboutInstallBtn: document.getElementById('about-install-btn'),
+  aboutApiBtn: document.getElementById('about-api-btn'),
+  aboutIosTip: document.getElementById('about-ios-tip'),
+
   toastContainer: document.getElementById('toast-container'),
 };
 
@@ -2089,6 +2110,17 @@ function bindEvents() {
     }
   });
 
+  // About modal & PWA install buttons
+  dom.aboutBtn.addEventListener('click', openAboutModal);
+  dom.footerAboutBtn.addEventListener('click', openAboutModal);
+  dom.aboutCloseBtn.addEventListener('click', closeAboutModal);
+  dom.aboutModal.addEventListener('click', (e) => {
+    if (e.target === dom.aboutModal) closeAboutModal();
+  });
+
+  dom.installAppBtn.addEventListener('click', promptInstallPwa);
+  dom.aboutInstallBtn.addEventListener('click', promptInstallPwa);
+
   // Browser Back / Forward navigation support
   window.addEventListener('popstate', () => {
     readQueryParamsIntoState();
@@ -2110,6 +2142,10 @@ function bindEvents() {
         target.isContentEditable);
 
     if (e.key === 'Escape') {
+      if (dom.aboutModal.classList.contains('open')) {
+        closeAboutModal();
+        return;
+      }
       if (dom.modal.classList.contains('open')) {
         closeStationModal();
         return;
@@ -2145,10 +2181,113 @@ function bindEvents() {
 }
 
 /* ==========================================================================
+   About Modal & PWA Install Lifecycle
+   ========================================================================== */
+
+function isStandalonePwa() {
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true
+  );
+}
+
+function isIosSafari() {
+  const ua = window.navigator.userAgent || '';
+  const isIos = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
+  return isIos && isSafari;
+}
+
+function syncInstallButtons() {
+  const canInstall = Boolean(state.deferredInstallPrompt) && !isStandalonePwa();
+  dom.installAppBtn.style.display = canInstall ? 'grid' : 'none';
+  dom.aboutInstallBtn.style.display = canInstall ? 'inline-flex' : 'none';
+}
+
+function populateAppConfigMetadata() {
+  const versionLabel = `v${APP_CONFIG.version}`;
+  dom.footerVersion.textContent = versionLabel;
+  dom.aboutModalTitle.textContent = APP_CONFIG.name;
+  dom.aboutVersionBadge.textContent = versionLabel;
+  dom.aboutTagline.textContent = APP_CONFIG.tagline;
+  dom.aboutSpecVersion.textContent = versionLabel;
+  dom.aboutSpecRepo.href = APP_CONFIG.repoUrl;
+  dom.aboutSpecRepo.textContent = `${APP_CONFIG.repoLabel} ↗`;
+  dom.aboutRepoBtn.href = APP_CONFIG.repoUrl;
+  dom.aboutApiBtn.href = APP_CONFIG.apiDocsUrl;
+}
+
+function openAboutModal() {
+  state.lastFocusedEl = document.activeElement;
+  populateAppConfigMetadata();
+  dom.aboutSpecMirror.textContent = radioApi.getActiveMirror();
+  dom.aboutSpecMode.textContent = isStandalonePwa() ? 'Installed PWA' : 'Web Browser';
+  dom.aboutIosTip.style.display = !isStandalonePwa() && isIosSafari() ? 'block' : 'none';
+  syncInstallButtons();
+
+  dom.aboutModal.classList.add('open');
+  document.body.classList.add('modal-open');
+  dom.aboutCloseBtn.focus();
+}
+
+function closeAboutModal() {
+  dom.aboutModal.classList.remove('open');
+  if (!dom.modal.classList.contains('open')) {
+    document.body.classList.remove('modal-open');
+  }
+  if (state.lastFocusedEl && typeof state.lastFocusedEl.focus === 'function') {
+    state.lastFocusedEl.focus();
+  }
+  state.lastFocusedEl = null;
+}
+
+async function promptInstallPwa() {
+  const promptEvent = state.deferredInstallPrompt;
+  if (!promptEvent) return;
+
+  promptEvent.prompt();
+  try {
+    const choice = await promptEvent.userChoice;
+    if (choice && choice.outcome === 'accepted') {
+      showToast('Installing ONDA…');
+    }
+  } catch {
+    // Ignore dismissed prompt errors
+  } finally {
+    state.deferredInstallPrompt = null;
+    syncInstallButtons();
+  }
+}
+
+function initPwa() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.deferredInstallPrompt = e;
+    syncInstallButtons();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    state.deferredInstallPrompt = null;
+    syncInstallButtons();
+    showToast('ONDA installed as an app!');
+  });
+
+  if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+        // Non-fatal if browser blocks service workers (e.g., strict private mode)
+      });
+    });
+  }
+}
+
+/* ==========================================================================
    Bootstrap
    ========================================================================== */
 
 async function init() {
+  populateAppConfigMetadata();
+  initPwa();
   applyTheme(prefs.theme);
   radioPlayer.setVolume(prefs.volume, prefs.muted);
   radioPlayer.attachVuCanvas(dom.vuCanvas);

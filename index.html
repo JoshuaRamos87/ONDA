@@ -9,8 +9,14 @@
   <meta property="og:description" content="Explore and stream live radio stations worldwide by genre, country, language, and audio quality — powered by the free open Radio Browser directory.">
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#1D2026">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ONDA">
 
+  <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
@@ -82,6 +88,18 @@
           </svg>
           <span id="surprise-spinner" class="spinner" style="display:none;width:15px;height:15px" aria-hidden="true"></span>
           <span>Surprise Me</span>
+        </button>
+        <button type="button" id="install-app-btn" class="icon-btn install-header-btn" aria-label="Install ONDA app" title="Install ONDA as an app" style="display:none">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </button>
+        <button type="button" id="about-btn" class="icon-btn" aria-label="About ONDA" title="About ONDA, version &amp; GitHub repo">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+          </svg>
         </button>
         <button type="button" id="theme-toggle-btn" class="icon-btn" aria-label="Toggle dark theme" title="Toggle light / dark theme">
           <svg id="theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
@@ -334,8 +352,14 @@
 
   <!-- Footer -->
   <footer class="site-footer">
-    <div>
-      Powered by the community-maintained <a href="https://www.radio-browser.info/" target="_blank" rel="noopener noreferrer">Radio Browser</a> open API (<a href="https://docs.radio-browser.info/" target="_blank" rel="noopener noreferrer">API docs</a>). Streams are hosted directly by their respective broadcasters.
+    <div class="footer-left">
+      <button type="button" id="footer-about-btn" class="footer-about-link">
+        ONDA <span id="footer-version" class="footer-version-tag">v—</span> · About &amp; Source
+      </button>
+      <span class="footer-sep" aria-hidden="true">·</span>
+      <span>
+        Powered by <a href="https://www.radio-browser.info/" target="_blank" rel="noopener noreferrer">Radio Browser</a> (<a href="https://docs.radio-browser.info/" target="_blank" rel="noopener noreferrer">API docs</a>). Streams are hosted directly by their respective broadcasters.
+      </span>
     </div>
     <div class="kbd-hints" aria-label="Keyboard shortcuts">
       <span><kbd>/</kbd> Search</span>
@@ -488,6 +512,80 @@
       <div class="modal-specs-grid" id="modal-specs"></div>
 
       <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- About ONDA Modal -->
+  <div class="modal-backdrop" id="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-modal-title">
+    <div class="modal-dialog about-modal-dialog">
+      <div class="modal-header">
+        <div class="modal-station-head">
+          <div class="about-brand-emblem" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <circle cx="12" cy="14" r="2.6" fill="#E33E1B" stroke="none"/>
+              <path d="M7.8 18.2a6 6 0 0 1 0-8.4"/>
+              <path d="M16.2 9.8a6 6 0 0 1 0 8.4"/>
+              <path d="M4.6 21.4a10.5 10.5 0 0 1 0-14.8" opacity="0.55"/>
+              <path d="M19.4 6.6a10.5 10.5 0 0 1 0 14.8" opacity="0.55"/>
+              <line x1="12" y1="3" x2="12" y2="9" stroke="#E33E1B"/>
+            </svg>
+          </div>
+          <div>
+            <div class="about-title-row">
+              <h2 class="modal-title" id="about-modal-title">ONDA</h2>
+              <span class="about-version-pill" id="about-version-badge">v—</span>
+            </div>
+            <p class="modal-subtitle" id="about-tagline">World Radio Broadcast Tuner</p>
+          </div>
+        </div>
+        <button type="button" id="about-close-btn" class="icon-btn" aria-label="Close about dialog">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <p class="about-description">
+        ONDA is an open, zero-account web tuner for exploring and streaming live internet radio stations worldwide. Station discovery and metadata are powered by the volunteer-maintained <strong>Radio Browser</strong> community network.
+      </p>
+
+      <div class="modal-specs-grid">
+        <div class="modal-spec-box">
+          <span class="modal-spec-label">App Version</span>
+          <span class="modal-spec-val" id="about-spec-version">—</span>
+        </div>
+        <div class="modal-spec-box">
+          <span class="modal-spec-label">App Mode</span>
+          <span class="modal-spec-val" id="about-spec-mode">Web Browser</span>
+        </div>
+        <div class="modal-spec-box">
+          <span class="modal-spec-label">Active API Mirror</span>
+          <span class="modal-spec-val" id="about-spec-mirror">—</span>
+        </div>
+        <div class="modal-spec-box">
+          <span class="modal-spec-label">Source Repository</span>
+          <a class="modal-spec-val about-inline-link" id="about-spec-repo" href="https://github.com/JoshuaRamos87/ONDA" target="_blank" rel="noopener noreferrer">JoshuaRamos87/ONDA ↗</a>
+        </div>
+      </div>
+
+      <div class="about-ios-tip" id="about-ios-tip" style="display:none">
+        <strong>Install on iOS / iPadOS:</strong> Tap the Safari <strong>Share</strong> button and choose <strong>Add to Home Screen</strong> to use ONDA as a standalone app.
+      </div>
+
+      <div class="modal-actions">
+        <a class="btn-primary" id="about-repo-btn" href="https://github.com/JoshuaRamos87/ONDA" target="_blank" rel="noopener noreferrer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.35.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.16-1.18 3.16-1.18.62 1.58.23 2.75.11 3.04.74.8 1.18 1.83 1.18 3.08 0 4.41-2.69 5.39-5.26 5.67.41.36.78 1.06.78 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/>
+          </svg>
+          <span>GitHub Repository</span>
+        </a>
+        <button type="button" class="btn-ghost-sm" id="about-install-btn" style="display:none">
+          ↓ Install App
+        </button>
+        <a class="btn-ghost-sm" id="about-api-btn" href="https://docs.radio-browser.info/" target="_blank" rel="noopener noreferrer">
+          Radio Browser API ↗
+        </a>
+      </div>
     </div>
   </div>
 

@@ -1,0 +1,53 @@
+{
+  "id": "./",
+  "name": "ONDA — World Radio Broadcast Tuner",
+  "short_name": "ONDA",
+  "description": "Browse, search, and listen live to tens of thousands of free internet radio stations worldwide via the open Radio Browser directory.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1D2026",
+  "theme_color": "#1D2026",
+  "categories": ["music", "entertainment", "news"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Discover Stations",
+      "short_name": "Discover",
+      "url": "./",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Saved Stations",
+      "short_name": "Saved",
+      "url": "./?view=favorites",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
