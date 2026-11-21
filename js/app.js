@@ -1,7 +1,7 @@
 /**
  * ONDA — World Radio Broadcast Tuner
- * Application Controller: views, filters, search, directories, station details,
- * favorites sync, deep-linking, and keyboard navigation.
+ * Application Controller: views, smart search suggestions, filters, directories,
+ * station details modal, favorites sync, browser history, and keyboard navigation.
  */
 
 import { radioApi } from './api.js';
@@ -76,6 +76,7 @@ const prefs = storage.getPrefs();
 const state = {
   view: 'discover', // discover | genres | countries | languages | favorites
   activePreset: 'popular',
+  sharedStationUuid: null,
   filters: {
     name: '',
     tag: '',
@@ -98,10 +99,12 @@ const state = {
   countries: [],
   languages: [],
   directoriesLoaded: false,
+  directoriesError: false,
 
-  // Active playback queue (matches current visible list)
+  // Active playback queue & modal tracking
   queue: [],
   modalStation: null,
+  lastFocusedEl: null,
   votedUuids: new Set(),
 };
 
@@ -114,12 +117,15 @@ const dom = {
   searchForm: document.getElementById('global-search-form'),
   searchInput: document.getElementById('global-search-input'),
   searchClearBtn: document.getElementById('search-clear-btn'),
+  searchSuggestions: document.getElementById('search-suggestions'),
   navTabs: document.querySelectorAll('.nav-tab[data-view]'),
   favBadges: [
     document.getElementById('favorites-count-badge'),
     document.getElementById('favorites-count-badge-mobile'),
   ],
   surpriseBtn: document.getElementById('surprise-btn'),
+  surpriseIcon: document.getElementById('surprise-icon'),
+  surpriseSpinner: document.getElementById('surprise-spinner'),
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
   themeIconSun: document.getElementById('theme-icon-sun'),
   themeIconMoon: document.getElementById('theme-icon-moon'),
@@ -189,9 +195,12 @@ const dom = {
   deckArt: document.getElementById('deck-art'),
   deckOnAir: document.getElementById('deck-on-air'),
   deckStatusLabel: document.getElementById('deck-status-label'),
+  deckSleepBadge: document.getElementById('deck-sleep-badge'),
   deckTech: document.getElementById('deck-tech'),
   deckTitle: document.getElementById('deck-title'),
   deckSubtitle: document.getElementById('deck-subtitle'),
+  deckMobileFavBtn: document.getElementById('deck-mobile-fav-btn'),
+  deckMobileMoreBtn: document.getElementById('deck-mobile-more-btn'),
   deckPrevBtn: document.getElementById('deck-prev-btn'),
   deckPlayBtn: document.getElementById('deck-play-btn'),
   deckNextBtn: document.getElementById('deck-next-btn'),
@@ -246,9 +255,6 @@ function sanitizeHttpUrl(url) {
   return '';
 }
 
-/**
- * Avoid mixed-content warnings for http:// favicons when hosted on https:// GitHub Pages.
- */
 function getSafeFaviconUrl(url) {
   const clean = sanitizeHttpUrl(url);
   if (!clean) return '';
@@ -363,47 +369,81 @@ function applyTheme(theme) {
 }
 
 /* ==========================================================================
-   URL Deep-Link Synchronization
+   URL Deep-Link & Browser History Synchronization
    ========================================================================== */
 
-function readInitialQueryParams() {
+function readQueryParamsIntoState() {
   const params = new URLSearchParams(window.location.search);
-  const q = params.get('q');
-  const tag = params.get('tag');
-  const country = params.get('country');
-  const lang = params.get('lang');
-  const stationUuid = params.get('station');
+  const view = params.get('view');
+  const q = params.get('q') || '';
+  const tag = params.get('tag') || '';
+  const country = (params.get('country') || '').toUpperCase();
+  const lang = params.get('lang') || '';
+  const codec = params.get('codec') || '';
+  const bitrateMin = Number(params.get('bitrate')) || 0;
+  const sort = params.get('sort') || '';
+  const stationUuid = params.get('station') || null;
 
-  if (q) {
-    state.filters.name = q;
+  state.view = view && dom.views[view] ? view : 'discover';
+  state.sharedStationUuid = stationUuid;
+
+  const hasCustomFilter = Boolean(q || tag || country || lang || codec || bitrateMin || sort);
+  if (hasCustomFilter) {
     state.activePreset = null;
-  }
-  if (tag) {
-    state.filters.tag = tag;
-    state.activePreset = null;
-  }
-  if (country) {
-    state.filters.countrycode = country.toUpperCase();
-    state.activePreset = null;
-  }
-  if (lang) {
-    state.filters.language = lang;
-    state.activePreset = null;
+    const [order, dir] = sort ? sort.split(':') : ['clickcount', 'desc'];
+    state.filters = {
+      ...state.filters,
+      name: q,
+      tag,
+      countrycode: country,
+      language: lang,
+      codec,
+      bitrateMin,
+      order: order || 'clickcount',
+      reverse: dir !== 'asc',
+    };
+  } else {
+    state.activePreset = 'popular';
+    state.filters = {
+      ...CURATED_PRESETS.popular.filters,
+      httpsOnly: state.filters.httpsOnly,
+    };
   }
 
   return { stationUuid };
 }
 
-function syncUrlWithFilters() {
+function buildUrlFromState() {
   const params = new URLSearchParams();
+  if (state.view && state.view !== 'discover') params.set('view', state.view);
   if (state.filters.name) params.set('q', state.filters.name);
   if (state.filters.tag) params.set('tag', state.filters.tag);
   if (state.filters.countrycode) params.set('country', state.filters.countrycode);
   if (state.filters.language) params.set('lang', state.filters.language);
+  if (state.filters.codec) params.set('codec', state.filters.codec);
+  if (state.filters.bitrateMin) params.set('bitrate', String(state.filters.bitrateMin));
+
+  const sortStr = `${state.filters.order}:${state.filters.reverse ? 'desc' : 'asc'}`;
+  if (sortStr !== 'clickcount:desc') params.set('sort', sortStr);
+
+  // Preserve shared ?station=<uuid> while still tuned to or loading that station
+  if (state.sharedStationUuid) {
+    params.set('station', state.sharedStationUuid);
+  }
 
   const query = params.toString();
-  const nextUrl = query ? `${window.location.pathname}?${query}` : window.location.pathname;
-  window.history.replaceState(null, '', nextUrl);
+  return query ? `${window.location.pathname}?${query}` : window.location.pathname;
+}
+
+function syncHistory({ push = false } = {}) {
+  const nextUrl = buildUrlFromState();
+  const currentUrl = `${window.location.pathname}${window.location.search}`;
+  if (nextUrl === currentUrl) return;
+  if (push) {
+    window.history.pushState(null, '', nextUrl);
+  } else {
+    window.history.replaceState(null, '', nextUrl);
+  }
 }
 
 function getStationShareUrl(station) {
@@ -417,7 +457,7 @@ function getStationShareUrl(station) {
    Navigation & View Switching
    ========================================================================== */
 
-function switchView(viewName) {
+function switchView(viewName, { pushHistory = true } = {}) {
   if (!dom.views[viewName]) return;
   state.view = viewName;
 
@@ -439,7 +479,115 @@ function switchView(viewName) {
     renderFavoritesView();
   }
 
+  if (pushHistory) {
+    syncHistory({ push: true });
+  }
+
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ==========================================================================
+   Smart Search Suggestions (Matches Genres, Countries & Languages)
+   ========================================================================== */
+
+function hideSearchSuggestions() {
+  dom.searchSuggestions.classList.remove('open');
+  dom.searchSuggestions.innerHTML = '';
+}
+
+function renderSearchSuggestions(rawQuery) {
+  const q = rawQuery.trim().toLowerCase();
+  if (q.length < 2) {
+    hideSearchSuggestions();
+    return;
+  }
+
+  const suggestions = [];
+
+  // Matching countries
+  const countryMatches = state.countries
+    .filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.iso_3166_1 || '').toLowerCase() === q
+    )
+    .slice(0, 3);
+
+  for (const c of countryMatches) {
+    suggestions.push({
+      type: 'country',
+      value: c.iso_3166_1,
+      kind: 'Country',
+      label: `${countryCodeToFlag(c.iso_3166_1)} ${c.name}`,
+      meta: `${formatNumber(c.stationcount)} stations`,
+    });
+  }
+
+  // Matching genres/tags
+  const tagMatches = state.tags
+    .filter((t) => t.name.toLowerCase().includes(q))
+    .slice(0, 3);
+
+  for (const t of tagMatches) {
+    suggestions.push({
+      type: 'tag',
+      value: t.name,
+      kind: 'Genre',
+      label: `#${t.name}`,
+      meta: `${formatNumber(t.stationcount)} stations`,
+    });
+  }
+
+  // Matching languages
+  const langMatches = state.languages
+    .filter((l) => l.name.toLowerCase().includes(q))
+    .slice(0, 2);
+
+  for (const l of langMatches) {
+    suggestions.push({
+      type: 'language',
+      value: l.name,
+      kind: 'Language',
+      label: l.name.charAt(0).toUpperCase() + l.name.slice(1),
+      meta: `${formatNumber(l.stationcount)} stations`,
+    });
+  }
+
+  // Always offer direct station name search
+  suggestions.push({
+    type: 'name',
+    value: rawQuery.trim(),
+    kind: 'Search',
+    label: `Station names containing "${rawQuery.trim()}"`,
+    meta: 'Enter ↵',
+  });
+
+  if (suggestions.length <= 1) {
+    hideSearchSuggestions();
+    return;
+  }
+
+  dom.searchSuggestions.innerHTML = suggestions
+    .map(
+      (s) => `
+      <button
+        type="button"
+        class="search-suggestion-item"
+        role="option"
+        data-suggest-type="${escapeHtml(s.type)}"
+        data-suggest-value="${escapeHtml(s.value)}"
+      >
+        <span class="suggestion-left">
+          <span class="suggestion-kind">${escapeHtml(s.kind)}</span>
+          <span class="suggestion-label">${escapeHtml(s.label)}</span>
+        </span>
+        <span class="suggestion-meta">${escapeHtml(s.meta)}</span>
+      </button>
+    `
+    )
+    .join('');
+
+  dom.searchSuggestions.classList.add('open');
 }
 
 /* ==========================================================================
@@ -485,7 +633,6 @@ function syncControlsFromState() {
   dom.filterLanguage.value = state.filters.language;
   dom.filterHttpsOnly.checked = state.filters.httpsOnly;
 
-  // Quality select
   if (state.filters.codec) {
     dom.filterQuality.value = `codec:${state.filters.codec}`;
   } else if (state.filters.bitrateMin) {
@@ -494,13 +641,11 @@ function syncControlsFromState() {
     dom.filterQuality.value = '';
   }
 
-  // Sort select
   const sortVal = `${state.filters.order}:${state.filters.reverse ? 'desc' : 'asc'}`;
   dom.filterSort.value = dom.filterSort.querySelector(`option[value="${sortVal}"]`)
     ? sortVal
     : 'clickcount:desc';
 
-  // Presets highlight
   dom.presetCards.forEach((card) => {
     card.classList.toggle('active', card.dataset.preset === state.activePreset);
   });
@@ -537,22 +682,29 @@ function renderActiveFilterChips() {
     chips.push({ key: 'bitrateMin', label: `${state.filters.bitrateMin}+ kbps` });
   }
 
-  dom.activeFilters.innerHTML = chips
-    .map(
-      (c) => `
+  const reshuffleChip =
+    state.filters.order === 'random'
+      ? '<button type="button" class="active-filter-pill" data-reshuffle="true" title="Load a fresh random shuffle">↻ Reshuffle</button>'
+      : '';
+
+  dom.activeFilters.innerHTML =
+    chips
+      .map(
+        (c) => `
       <button type="button" class="active-filter-pill" data-remove-filter="${c.key}" title="Remove filter">
         <span>${escapeHtml(c.label)}</span>
         <span aria-hidden="true">✕</span>
       </button>
     `
-    )
-    .join('');
+      )
+      .join('') + reshuffleChip;
 
-  // Dynamic heading
   if (state.activePreset && CURATED_PRESETS[state.activePreset]) {
     dom.resultsHeading.textContent = CURATED_PRESETS[state.activePreset].label;
   } else if (chips.length > 0) {
     dom.resultsHeading.textContent = chips.map((c) => c.label).slice(0, 2).join(' · ');
+  } else if (state.filters.order === 'random') {
+    dom.resultsHeading.textContent = 'Random Shuffle Worldwide';
   } else {
     dom.resultsHeading.textContent = 'Worldwide Stations';
   }
@@ -568,7 +720,7 @@ function renderSkeletons(count = 12) {
     .join('');
 }
 
-async function fetchStations({ append = false } = {}) {
+async function fetchStations({ append = false, pushHistory = false } = {}) {
   if (state.abortController) {
     state.abortController.abort();
   }
@@ -586,10 +738,12 @@ async function fetchStations({ append = false } = {}) {
   }
 
   state.loadingStations = true;
-  syncUrlWithFilters();
+  if (pushHistory) {
+    syncHistory({ push: true });
+  }
 
   try {
-    const batch = await radioApi.searchStations(
+    const { stations: batch, rawCount } = await radioApi.searchStations(
       {
         ...state.filters,
         limit: PAGE_SIZE,
@@ -600,14 +754,22 @@ async function fetchStations({ append = false } = {}) {
 
     if (append) {
       const existingIds = new Set(state.stations.map((s) => s.stationuuid));
-      const deduped = batch.filter((s) => !existingIds.has(s.stationuuid));
+      const existingUrls = new Set(
+        state.stations.map((s) => (s.url_resolved || s.url || '').toLowerCase()).filter(Boolean)
+      );
+      const deduped = batch.filter((s) => {
+        if (existingIds.has(s.stationuuid)) return false;
+        const urlKey = (s.url_resolved || s.url || '').toLowerCase();
+        if (urlKey && existingUrls.has(urlKey)) return false;
+        return true;
+      });
       state.stations = [...state.stations, ...deduped];
     } else {
       state.stations = batch;
     }
 
-    state.offset += batch.length;
-    state.hasMore = batch.length === PAGE_SIZE;
+    state.offset += rawCount;
+    state.hasMore = rawCount === PAGE_SIZE && state.filters.order !== 'random';
 
     if (state.view === 'discover') {
       state.queue = state.stations;
@@ -632,6 +794,14 @@ async function fetchStations({ append = false } = {}) {
   } catch (err) {
     if (err && err.name === 'AbortError') return;
 
+    // If "Load more" failed, preserve already-loaded stations and let the user retry!
+    if (append && state.stations.length > 0) {
+      dom.loadMoreBtn.disabled = false;
+      dom.loadMoreBtn.textContent = 'Retry loading more';
+      showToast('Could not load more stations right now — please try again.');
+      return;
+    }
+
     dom.resultsCount.textContent = 'Connection error';
     dom.stationsGrid.innerHTML = `
       <div class="empty-state" style="grid-column: 1 / -1">
@@ -645,13 +815,10 @@ async function fetchStations({ append = false } = {}) {
         <button type="button" class="btn-primary" id="retry-fetch-btn">Switch Mirror &amp; Retry</button>
       </div>
     `;
-    const retryBtn = document.getElementById('retry-fetch-btn');
-    if (retryBtn) {
-      retryBtn.addEventListener('click', () => {
-        radioApi.rotateMirror();
-        fetchStations({ append: false });
-      });
-    }
+    document.getElementById('retry-fetch-btn')?.addEventListener('click', () => {
+      radioApi.rotateMirror();
+      fetchStations({ append: false });
+    });
   } finally {
     state.loadingStations = false;
   }
@@ -688,6 +855,7 @@ function buildStationCardHtml(station, playerState, isFav) {
     playerState.station && playerState.station.stationuuid === station.stationuuid;
   const isPlaying = isCurrent && playerState.status === 'playing';
   const isLoading = isCurrent && playerState.status === 'loading';
+  const playState = isLoading ? 'loading' : isPlaying ? 'playing' : 'idle';
 
   const flag = countryCodeToFlag(station.countrycode);
   const locationParts = [station.country, station.state].filter(Boolean);
@@ -698,8 +866,9 @@ function buildStationCardHtml(station, playerState, isFav) {
   const bitrate = Number(station.bitrate) > 0 ? `${station.bitrate}k` : '';
   const isHls = Number(station.hls) === 1;
   const streamUrl = station.url_resolved || station.url || '';
-  const isHttpOnHttps =
-    window.location.protocol === 'https:' && streamUrl.startsWith('http://');
+  const hasHttpsAlt =
+    streamUrl.startsWith('https://') || (station.url || '').startsWith('https://');
+  const isHttpOnHttps = window.location.protocol === 'https:' && !hasHttpsAlt;
 
   const playOverlayInner = isLoading
     ? '<span class="spinner"></span>'
@@ -711,6 +880,7 @@ function buildStationCardHtml(station, playerState, isFav) {
     <article
       class="station-card ${isPlaying ? 'is-playing' : ''} ${isLoading ? 'is-loading' : ''}"
       data-station-uuid="${escapeHtml(station.stationuuid)}"
+      data-play-state="${playState}"
     >
       <div class="station-card-top">
         <button
@@ -806,17 +976,37 @@ function findStationByUuid(uuid) {
   );
 }
 
+/**
+ * Keep favorite heart states synchronized across all visible cards, deck, and badges.
+ */
+function syncFavoriteIcons(uuid, isFav) {
+  updateFavoriteBadges();
+  document
+    .querySelectorAll(`.station-card[data-station-uuid="${CSS.escape(uuid)}"] [data-action="favorite"]`)
+    .forEach((btn) => {
+      btn.classList.toggle('favorited', isFav);
+      btn.setAttribute('aria-label', isFav ? 'Remove from saved' : 'Save station');
+      btn.setAttribute('title', isFav ? 'Saved' : 'Save station');
+    });
+
+  if (radioPlayer.currentStation?.stationuuid === uuid) {
+    dom.deckFavBtn.classList.toggle('active', isFav);
+    dom.deckMobileFavBtn.classList.toggle('active', isFav);
+  }
+}
+
 /* ==========================================================================
-   Directories (Genres, Countries, Languages)
+   Directories (Genres, Countries, Languages) with Retry Recovery
    ========================================================================== */
 
 async function loadDirectoriesAndStats() {
+  state.directoriesError = false;
   try {
     const [stats, tags, countries, languages] = await Promise.all([
       radioApi.getStats().catch(() => null),
-      radioApi.getTags(160).catch(() => []),
-      radioApi.getCountries().catch(() => []),
-      radioApi.getLanguages(120).catch(() => []),
+      radioApi.getTags(180),
+      radioApi.getCountries(),
+      radioApi.getLanguages(140),
     ]);
 
     if (stats) {
@@ -829,6 +1019,7 @@ async function loadDirectoriesAndStats() {
     state.countries = countries;
     state.languages = languages;
     state.directoriesLoaded = true;
+    state.directoriesError = false;
 
     populateFilterDropdowns();
     renderQuickGenreRail();
@@ -838,12 +1029,25 @@ async function loadDirectoriesAndStats() {
     if (state.view === 'countries') renderCountriesDirectory(dom.countriesDirSearch.value);
     if (state.view === 'languages') renderLanguagesDirectory(dom.languagesDirSearch.value);
   } catch {
-    // Non-fatal; station search still works independently
+    state.directoriesError = true;
+    if (state.view === 'genres') renderGenresDirectory(dom.genresDirSearch.value);
+    if (state.view === 'countries') renderCountriesDirectory(dom.countriesDirSearch.value);
+    if (state.view === 'languages') renderLanguagesDirectory(dom.languagesDirSearch.value);
   }
 }
 
+function renderDirectoryRetry(gridEl, countEl, label) {
+  countEl.textContent = 'Unavailable';
+  gridEl.innerHTML = `
+    <div class="empty-state" style="grid-column: 1 / -1">
+      <h3>Could not load ${escapeHtml(label)}</h3>
+      <p>The active Radio Browser mirror did not respond in time.</p>
+      <button type="button" class="btn-primary" data-retry-directories="true">Switch Mirror &amp; Retry</button>
+    </div>
+  `;
+}
+
 function populateFilterDropdowns() {
-  // Countries dropdown
   const countryOptions = state.countries
     .map((c) => {
       const code = (c.iso_3166_1 || '').toUpperCase();
@@ -851,39 +1055,38 @@ function populateFilterDropdowns() {
     })
     .join('');
   dom.filterCountry.innerHTML = `<option value="">All countries</option>${countryOptions}`;
+  ensureSelectOption(dom.filterCountry, state.filters.countrycode);
   dom.filterCountry.value = state.filters.countrycode;
 
-  // Tags dropdown
   const tagOptions = state.tags
-    .slice(0, 120)
+    .slice(0, 140)
     .map(
       (t) =>
         `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${formatNumber(t.stationcount)})</option>`
     )
     .join('');
   dom.filterTag.innerHTML = `<option value="">All genres</option>${tagOptions}`;
-  if (state.filters.tag && !dom.filterTag.querySelector(`option[value="${CSS.escape(state.filters.tag)}"]`)) {
-    const opt = document.createElement('option');
-    opt.value = state.filters.tag;
-    opt.textContent = state.filters.tag;
-    dom.filterTag.appendChild(opt);
-  }
+  ensureSelectOption(dom.filterTag, state.filters.tag);
   dom.filterTag.value = state.filters.tag;
 
-  // Languages dropdown
   const langOptions = state.languages
-    .slice(0, 100)
+    .slice(0, 110)
     .map(
       (l) =>
         `<option value="${escapeHtml(l.name)}">${escapeHtml(l.name)} (${formatNumber(l.stationcount)})</option>`
     )
     .join('');
   dom.filterLanguage.innerHTML = `<option value="">All languages</option>${langOptions}`;
+  ensureSelectOption(dom.filterLanguage, state.filters.language);
   dom.filterLanguage.value = state.filters.language;
 }
 
 function renderGenresDirectory(query = '') {
   if (!state.directoriesLoaded) {
+    if (state.directoriesError) {
+      renderDirectoryRetry(dom.genresDirGrid, dom.genresDirCount, 'genres');
+      return;
+    }
     dom.genresDirCount.textContent = 'Loading genres…';
     dom.genresDirGrid.innerHTML = Array.from({ length: 12 })
       .map(() => '<div class="skeleton-card" style="height:52px" aria-hidden="true"></div>')
@@ -912,6 +1115,10 @@ function renderGenresDirectory(query = '') {
 
 function renderCountriesDirectory(query = '') {
   if (!state.directoriesLoaded) {
+    if (state.directoriesError) {
+      renderDirectoryRetry(dom.countriesDirGrid, dom.countriesDirCount, 'countries');
+      return;
+    }
     dom.countriesDirCount.textContent = 'Loading countries…';
     dom.countriesDirGrid.innerHTML = Array.from({ length: 12 })
       .map(() => '<div class="skeleton-card" style="height:52px" aria-hidden="true"></div>')
@@ -946,6 +1153,10 @@ function renderCountriesDirectory(query = '') {
 
 function renderLanguagesDirectory(query = '') {
   if (!state.directoriesLoaded) {
+    if (state.directoriesError) {
+      renderDirectoryRetry(dom.languagesDirGrid, dom.languagesDirCount, 'languages');
+      return;
+    }
     dom.languagesDirCount.textContent = 'Loading languages…';
     dom.languagesDirGrid.innerHTML = Array.from({ length: 12 })
       .map(() => '<div class="skeleton-card" style="height:52px" aria-hidden="true"></div>')
@@ -1033,21 +1244,30 @@ async function refreshFavoritesFromApi() {
 }
 
 /* ==========================================================================
-   Player UI Synchronization
+   Player UI Synchronization (Separated State vs 1s Tick)
    ========================================================================== */
 
-function updateDeckUI(pState) {
-  const { station, status, errorMessage, volume, muted, elapsedSeconds } = pState;
+function updateDeckTick({ elapsedSeconds, sleepRemainingMs }) {
+  dom.deckTimer.textContent = formatElapsed(elapsedSeconds);
 
-  // Sync volume controls
+  if (sleepRemainingMs > 0) {
+    const secsLeft = Math.ceil(sleepRemainingMs / 1000);
+    dom.deckSleepBadge.textContent = `⏱ ${formatElapsed(secsLeft)}`;
+    dom.deckSleepBadge.style.display = 'inline-flex';
+  } else {
+    dom.deckSleepBadge.style.display = 'none';
+  }
+}
+
+function updateDeckUI(pState) {
+  const { station, status, errorMessage, volume, muted } = pState;
+
   dom.volumeSlider.value = String(muted ? 0 : volume);
   dom.volIconOn.style.display = muted || volume === 0 ? 'none' : 'block';
   dom.volIconMuted.style.display = muted || volume === 0 ? 'block' : 'none';
 
-  // Timer
-  dom.deckTimer.textContent = formatElapsed(elapsedSeconds);
+  updateDeckTick(pState);
 
-  // Error strip
   if (status === 'error' && errorMessage) {
     dom.deckErrorText.textContent = errorMessage;
     dom.deckErrorStrip.classList.add('visible');
@@ -1062,7 +1282,6 @@ function updateDeckUI(pState) {
     dom.deckErrorStrip.classList.remove('visible');
   }
 
-  // Sleep timer select state
   dom.sleepTimerSelect.value = String(pState.sleepMinutes || 0);
   dom.sleepTimerSelect.classList.toggle('active', pState.sleepMinutes > 0);
 
@@ -1071,6 +1290,8 @@ function updateDeckUI(pState) {
     dom.deckPrevBtn.disabled = true;
     dom.deckNextBtn.disabled = true;
     dom.deckFavBtn.disabled = true;
+    dom.deckMobileFavBtn.disabled = true;
+    dom.deckMobileMoreBtn.disabled = true;
     dom.deckShareBtn.disabled = true;
     return;
   }
@@ -1079,9 +1300,10 @@ function updateDeckUI(pState) {
   dom.deckPrevBtn.disabled = state.queue.length < 2;
   dom.deckNextBtn.disabled = state.queue.length < 2;
   dom.deckFavBtn.disabled = false;
+  dom.deckMobileFavBtn.disabled = false;
+  dom.deckMobileMoreBtn.disabled = false;
   dom.deckShareBtn.disabled = false;
 
-  // Artwork & metadata (only rewrite artwork when station changes to avoid image flicker)
   if (dom.deckArt.dataset.uuid !== station.stationuuid) {
     dom.deckArt.dataset.uuid = station.stationuuid;
     dom.deckArt.innerHTML = buildArtworkHtml(station, 50);
@@ -1100,7 +1322,6 @@ function updateDeckUI(pState) {
   ].filter(Boolean);
   dom.deckTech.textContent = techParts.join(' · ') || 'LIVE STREAM';
 
-  // ON AIR indicator
   dom.deckOnAir.classList.remove('live', 'buffering', 'error');
   if (status === 'playing') {
     dom.deckOnAir.classList.add('live');
@@ -1117,34 +1338,43 @@ function updateDeckUI(pState) {
     dom.deckStatusLabel.textContent = 'STANDBY';
   }
 
-  // Play/Pause/Spinner button icons
   dom.deckIconPlay.style.display = status === 'playing' || status === 'loading' ? 'none' : 'block';
   dom.deckIconPause.style.display = status === 'playing' ? 'block' : 'none';
   dom.deckIconSpinner.style.display = status === 'loading' ? 'inline-block' : 'none';
 
-  // Favorite icon state
   const isFav = storage.isFavorite(station.stationuuid);
   dom.deckFavBtn.classList.toggle('active', isFav);
+  dom.deckMobileFavBtn.classList.toggle('active', isFav);
 
-  // Sync active state on visible station cards without full re-render
   syncVisibleCardStates(station.stationuuid, status);
 }
 
+/**
+ * Only rewrite a card's play overlay when its visual playState actually changes,
+ * preserving smooth CSS equalizer animations without resetting frames.
+ */
 function syncVisibleCardStates(activeUuid, status) {
   document.querySelectorAll('.station-card[data-station-uuid]').forEach((card) => {
     const uuid = card.dataset.stationUuid;
     const isMatch = uuid === activeUuid;
-    const isPlaying = isMatch && status === 'playing';
-    const isLoading = isMatch && status === 'loading';
+    const nextState =
+      isMatch && status === 'loading'
+        ? 'loading'
+        : isMatch && status === 'playing'
+        ? 'playing'
+        : 'idle';
 
-    card.classList.toggle('is-playing', isPlaying);
-    card.classList.toggle('is-loading', isLoading);
+    if (card.dataset.playState === nextState) return;
+    card.dataset.playState = nextState;
+
+    card.classList.toggle('is-playing', nextState === 'playing');
+    card.classList.toggle('is-loading', nextState === 'loading');
 
     const overlay = card.querySelector('.station-play-overlay');
     if (overlay) {
-      if (isLoading) {
+      if (nextState === 'loading') {
         overlay.innerHTML = '<span class="spinner"></span>';
-      } else if (isPlaying) {
+      } else if (nextState === 'playing') {
         overlay.innerHTML =
           '<span class="eq-bars" aria-hidden="true"><span></span><span></span><span></span></span>';
       } else {
@@ -1155,13 +1385,17 @@ function syncVisibleCardStates(activeUuid, status) {
   });
 }
 
-function playStationFromList(station, sourceList) {
+function playStationFromList(station, sourceList, options = {}) {
   if (!station) return;
   if (Array.isArray(sourceList) && sourceList.length > 0) {
     state.queue = sourceList;
   }
+  if (state.sharedStationUuid && state.sharedStationUuid !== station.stationuuid) {
+    state.sharedStationUuid = null;
+    syncHistory({ push: false });
+  }
   storage.addRecent(station);
-  radioPlayer.playStation(station);
+  radioPlayer.playStation(station, options);
 }
 
 function stepQueue(delta) {
@@ -1172,34 +1406,42 @@ function stepQueue(delta) {
     currentIdx === -1
       ? 0
       : (currentIdx + delta + state.queue.length) % state.queue.length;
-  playStationFromList(state.queue[nextIdx], state.queue);
+  playStationFromList(state.queue[nextIdx], state.queue, { forcePlay: true });
 }
 
 async function tuneSurpriseStation() {
   dom.surpriseBtn.disabled = true;
+  dom.surpriseIcon.style.display = 'none';
+  dom.surpriseSpinner.style.display = 'inline-block';
+
   try {
-    const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 10);
+    const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 14);
     if (candidates.length === 0) {
       showToast('Could not find a random station right now.');
       return;
     }
-    const pick = candidates[0];
+    const currentUuid = radioPlayer.currentStation?.stationuuid;
+    const pick =
+      candidates.find((s) => s.stationuuid !== currentUuid) || candidates[0];
     state.queue = candidates;
-    playStationFromList(pick, candidates);
+    playStationFromList(pick, candidates, { forcePlay: true });
     showToast(`Tuned to ${pick.name} (${pick.country || 'Worldwide'})`);
   } catch {
     showToast('Failed to fetch a random station. Try again.');
   } finally {
     dom.surpriseBtn.disabled = false;
+    dom.surpriseIcon.style.display = 'block';
+    dom.surpriseSpinner.style.display = 'none';
   }
 }
 
 /* ==========================================================================
-   Station Detail Modal
+   Station Detail Modal (Includes Mobile-Friendly Sleep Timer & Mute)
    ========================================================================== */
 
 function openStationModal(station) {
   if (!station) return;
+  state.lastFocusedEl = document.activeElement;
   state.modalStation = station;
 
   dom.modalArt.innerHTML = buildArtworkHtml(station, 64);
@@ -1232,11 +1474,29 @@ function openStationModal(station) {
     (Number(station.geo_lat) !== 0 || Number(station.geo_long) !== 0);
 
   const specs = [
-    { label: 'Format & Bitrate', value: `${(station.codec || 'Audio').toUpperCase()}${Number(station.bitrate) > 0 ? ` · ${station.bitrate} kbps` : ''}${Number(station.hls) === 1 ? ' (HLS)' : ''}` },
-    { label: 'Community Stats', value: `${formatNumber(station.votes)} votes · ${formatNumber(station.clickcount)} clicks/24h` },
-    { label: 'Protocol', value: streamUrl.startsWith('https://') ? 'HTTPS (Secure)' : 'HTTP (Unencrypted)' },
-    { label: 'Station UUID', value: station.stationuuid.slice(0, 18) + '…' },
+    {
+      label: 'Format & Bitrate',
+      value: `${(station.codec || 'Audio').toUpperCase()}${Number(station.bitrate) > 0 ? ` · ${station.bitrate} kbps` : ''}${Number(station.hls) === 1 ? ' (HLS)' : ''}`,
+    },
+    {
+      label: 'Community Stats',
+      value: `${formatNumber(station.votes)} votes · ${formatNumber(station.clickcount)} clicks/24h`,
+    },
+    {
+      label: 'Protocol',
+      value: streamUrl.startsWith('https://') ? 'HTTPS (Secure)' : 'HTTP (Unencrypted)',
+    },
+    {
+      label: 'Station UUID',
+      value: station.stationuuid.slice(0, 18) + '…',
+    },
   ];
+
+  const pState = radioPlayer.getState();
+  const isThisPlaying =
+    pState.station?.stationuuid === station.stationuuid && pState.status === 'playing';
+  const isFav = storage.isFavorite(station.stationuuid);
+  const voted = state.votedUuids.has(station.stationuuid);
 
   dom.modalSpecs.innerHTML = specs
     .map(
@@ -1249,11 +1509,22 @@ function openStationModal(station) {
     )
     .join('');
 
-  const isFav = storage.isFavorite(station.stationuuid);
-  const voted = state.votedUuids.has(station.stationuuid);
-
   dom.modalActions.innerHTML = `
-    <button type="button" class="btn-primary" id="modal-play-btn">▶ Tune In</button>
+    <div class="modal-tuner-bar" style="width:100%;margin-top:0;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <label for="modal-sleep-select">Sleep Timer</label>
+        <select id="modal-sleep-select" class="modal-sleep-select">
+          <option value="0" ${pState.sleepMinutes === 0 ? 'selected' : ''}>Off</option>
+          <option value="15" ${pState.sleepMinutes === 15 ? 'selected' : ''}>15 min</option>
+          <option value="30" ${pState.sleepMinutes === 30 ? 'selected' : ''}>30 min</option>
+          <option value="60" ${pState.sleepMinutes === 60 ? 'selected' : ''}>60 min</option>
+        </select>
+      </div>
+      <button type="button" class="btn-ghost-sm" id="modal-mute-btn">
+        ${pState.muted ? '🔇 Unmute Audio' : '🔊 Mute Audio'}
+      </button>
+    </div>
+    <button type="button" class="btn-primary" id="modal-play-btn">${isThisPlaying ? '⏸ Pause' : '▶ Tune In'}</button>
     <button type="button" class="btn-ghost-sm" id="modal-fav-btn">${isFav ? '♥ Saved' : '♡ Save'}</button>
     <button type="button" class="btn-ghost-sm" id="modal-vote-btn" ${voted ? 'disabled' : ''}>${voted ? '✓ Upvoted' : '▲ Upvote'}</button>
     <button type="button" class="btn-ghost-sm" id="modal-share-btn">Copy Link</button>
@@ -1263,17 +1534,36 @@ function openStationModal(station) {
   `;
 
   dom.modal.classList.add('open');
+  document.body.classList.add('modal-open');
+  dom.modalCloseBtn.focus();
+
+  document.getElementById('modal-sleep-select')?.addEventListener('change', (e) => {
+    const mins = Number(e.target.value);
+    radioPlayer.setSleepTimer(mins);
+    showToast(mins > 0 ? `Sleep timer set for ${mins} minutes.` : 'Sleep timer turned off.');
+  });
+
+  document.getElementById('modal-mute-btn')?.addEventListener('click', (e) => {
+    const muted = radioPlayer.toggleMute();
+    storage.setPref('muted', muted);
+    e.currentTarget.textContent = muted ? '🔇 Unmute Audio' : '🔊 Mute Audio';
+  });
 
   document.getElementById('modal-play-btn')?.addEventListener('click', () => {
-    playStationFromList(station, state.stations.length ? state.stations : [station]);
+    if (isThisPlaying) {
+      radioPlayer.pause();
+    } else {
+      playStationFromList(station, state.stations.length ? state.stations : [station], {
+        forcePlay: true,
+      });
+    }
     closeStationModal();
   });
 
   document.getElementById('modal-fav-btn')?.addEventListener('click', (e) => {
     const res = storage.toggleFavorite(station);
     e.currentTarget.textContent = res.added ? '♥ Saved' : '♡ Save';
-    updateFavoriteBadges();
-    updateDeckUI(radioPlayer.getState());
+    syncFavoriteIcons(station.stationuuid, res.added);
     if (state.view === 'favorites') renderFavoritesView();
     showToast(res.added ? 'Saved to favorites.' : 'Removed from favorites.');
   });
@@ -1311,7 +1601,12 @@ function openStationModal(station) {
 
 function closeStationModal() {
   dom.modal.classList.remove('open');
+  document.body.classList.remove('modal-open');
   state.modalStation = null;
+  if (state.lastFocusedEl && typeof state.lastFocusedEl.focus === 'function') {
+    state.lastFocusedEl.focus();
+  }
+  state.lastFocusedEl = null;
 }
 
 async function copyToClipboard(text, successMsg) {
@@ -1327,14 +1622,23 @@ async function copyToClipboard(text, successMsg) {
    Event Bindings
    ========================================================================== */
 
-function resetAllFilters() {
+function resetAllFilters({ pushHistory = true } = {}) {
   state.activePreset = 'popular';
   state.filters = {
     ...CURATED_PRESETS.popular.filters,
     httpsOnly: state.filters.httpsOnly,
   };
   syncControlsFromState();
-  fetchStations({ append: false });
+  fetchStations({ append: false, pushHistory });
+}
+
+function toggleCurrentStationFavorite() {
+  const station = radioPlayer.currentStation;
+  if (!station) return;
+  const { added } = storage.toggleFavorite(station);
+  syncFavoriteIcons(station.stationuuid, added);
+  if (state.view === 'favorites') renderFavoritesView();
+  showToast(added ? `Saved "${station.name}"` : `Removed "${station.name}"`);
 }
 
 function bindEvents() {
@@ -1350,21 +1654,23 @@ function bindEvents() {
     showToast(`Switched API mirror to ${next}`);
     if (state.view === 'discover') {
       fetchStations({ append: false });
+    } else if (!state.directoriesLoaded) {
+      loadDirectoriesAndStats();
     }
   });
 
   // Brand click returns to Discover reset
   dom.brandHomeBtn.addEventListener('click', () => {
-    switchView('discover');
-    resetAllFilters();
+    switchView('discover', { pushHistory: false });
+    resetAllFilters({ pushHistory: true });
   });
 
   // Nav tabs
   dom.navTabs.forEach((tab) => {
-    tab.addEventListener('click', () => switchView(tab.dataset.view));
+    tab.addEventListener('click', () => switchView(tab.dataset.view, { pushHistory: true }));
   });
 
-  dom.seeAllGenresBtn.addEventListener('click', () => switchView('genres'));
+  dom.seeAllGenresBtn.addEventListener('click', () => switchView('genres', { pushHistory: true }));
 
   // Theme toggle
   dom.themeToggleBtn.addEventListener('click', () => {
@@ -1375,37 +1681,83 @@ function bindEvents() {
   // Surprise Me
   dom.surpriseBtn.addEventListener('click', tuneSurpriseStation);
 
-  // Global search (debounced + Enter)
+  // Global search + smart suggestions
   let searchDebounce = null;
   dom.searchInput.addEventListener('input', () => {
-    const value = dom.searchInput.value.trim();
+    const raw = dom.searchInput.value;
+    const value = raw.trim();
     dom.searchClearBtn.classList.toggle('visible', Boolean(value));
+    renderSearchSuggestions(raw);
+
     clearTimeout(searchDebounce);
     searchDebounce = setTimeout(() => {
       state.filters.name = value;
       state.activePreset = null;
-      if (state.view !== 'discover') switchView('discover');
+      if (state.view !== 'discover') switchView('discover', { pushHistory: false });
       syncControlsFromState();
-      fetchStations({ append: false });
-    }, 340);
+      fetchStations({ append: false, pushHistory: false });
+      syncHistory({ push: false });
+    }, 360);
+  });
+
+  dom.searchInput.addEventListener('focus', () => {
+    if (dom.searchInput.value.trim().length >= 2) {
+      renderSearchSuggestions(dom.searchInput.value);
+    }
+  });
+
+  dom.searchSuggestions.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-suggest-type]');
+    if (!item) return;
+    clearTimeout(searchDebounce);
+    const type = item.dataset.suggestType;
+    const value = item.dataset.suggestValue;
+
+    if (type === 'country') {
+      state.filters.name = '';
+      state.filters.countrycode = value;
+    } else if (type === 'tag') {
+      state.filters.name = '';
+      state.filters.tag = value;
+    } else if (type === 'language') {
+      state.filters.name = '';
+      state.filters.language = value;
+    } else {
+      state.filters.name = value;
+    }
+
+    state.activePreset = null;
+    hideSearchSuggestions();
+    if (state.view !== 'discover') switchView('discover', { pushHistory: false });
+    syncControlsFromState();
+    fetchStations({ append: false, pushHistory: true });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!dom.searchForm.contains(e.target)) {
+      hideSearchSuggestions();
+    }
   });
 
   dom.searchForm.addEventListener('submit', (e) => {
     e.preventDefault();
     clearTimeout(searchDebounce);
+    hideSearchSuggestions();
     state.filters.name = dom.searchInput.value.trim();
     state.activePreset = null;
-    if (state.view !== 'discover') switchView('discover');
+    if (state.view !== 'discover') switchView('discover', { pushHistory: false });
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.searchClearBtn.addEventListener('click', () => {
+    clearTimeout(searchDebounce);
+    hideSearchSuggestions();
     dom.searchInput.value = '';
     dom.searchClearBtn.classList.remove('visible');
     state.filters.name = '';
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
     dom.searchInput.focus();
   });
 
@@ -1417,7 +1769,7 @@ function bindEvents() {
     state.filters.tag = state.filters.tag.toLowerCase() === genre ? '' : genre;
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   // Curated presets
@@ -1432,7 +1784,7 @@ function bindEvents() {
         httpsOnly: state.filters.httpsOnly,
       };
       syncControlsFromState();
-      fetchStations({ append: false });
+      fetchStations({ append: false, pushHistory: true });
     });
   });
 
@@ -1441,21 +1793,21 @@ function bindEvents() {
     state.filters.countrycode = dom.filterCountry.value;
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.filterTag.addEventListener('change', () => {
     state.filters.tag = dom.filterTag.value;
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.filterLanguage.addEventListener('change', () => {
     state.filters.language = dom.filterLanguage.value;
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.filterQuality.addEventListener('change', () => {
@@ -1469,7 +1821,7 @@ function bindEvents() {
     }
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.filterSort.addEventListener('change', () => {
@@ -1478,7 +1830,7 @@ function bindEvents() {
     state.filters.reverse = dir !== 'asc';
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.filterHttpsOnly.addEventListener('change', () => {
@@ -1487,10 +1839,14 @@ function bindEvents() {
     fetchStations({ append: false });
   });
 
-  dom.resetFiltersBtn.addEventListener('click', resetAllFilters);
+  dom.resetFiltersBtn.addEventListener('click', () => resetAllFilters({ pushHistory: true }));
 
-  // Active filter chip removal
+  // Active filter chip removal & reshuffle
   dom.activeFilters.addEventListener('click', (e) => {
+    if (e.target.closest('[data-reshuffle]')) {
+      fetchStations({ append: false });
+      return;
+    }
     const btn = e.target.closest('[data-remove-filter]');
     if (!btn) return;
     const key = btn.dataset.removeFilter;
@@ -1501,17 +1857,17 @@ function bindEvents() {
     }
     state.activePreset = null;
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   // Load more
   dom.loadMoreBtn.addEventListener('click', () => fetchStations({ append: true }));
 
-  // Delegated clicks on station grids (Discover, Favorites, Recent)
+  // Delegated clicks on station grids
   const handleStationGridClick = (e, sourceGetter) => {
     const resetBtn = e.target.closest('[data-action="reset-all"]');
     if (resetBtn) {
-      resetAllFilters();
+      resetAllFilters({ pushHistory: true });
       return;
     }
 
@@ -1525,9 +1881,9 @@ function bindEvents() {
       if (tag) {
         state.filters.tag = tag;
         state.activePreset = null;
-        switchView('discover');
+        switchView('discover', { pushHistory: false });
         syncControlsFromState();
-        fetchStations({ append: false });
+        fetchStations({ append: false, pushHistory: true });
       }
       return;
     }
@@ -1540,9 +1896,7 @@ function bindEvents() {
       playStationFromList(station, sourceGetter());
     } else if (action === 'favorite') {
       const { added } = storage.toggleFavorite(station);
-      actionEl.classList.toggle('favorited', added);
-      updateFavoriteBadges();
-      updateDeckUI(radioPlayer.getState());
+      syncFavoriteIcons(station.stationuuid, added);
       if (state.view === 'favorites') renderFavoritesView();
       showToast(added ? `Saved "${station.name}"` : `Removed "${station.name}"`);
     } else if (action === 'info') {
@@ -1560,7 +1914,7 @@ function bindEvents() {
     handleStationGridClick(e, () => storage.getRecent())
   );
 
-  // Directory filters & selections
+  // Directory filters, retry & selections
   dom.genresDirSearch.addEventListener('input', () =>
     renderGenresDirectory(dom.genresDirSearch.value)
   );
@@ -1571,34 +1925,50 @@ function bindEvents() {
     renderLanguagesDirectory(dom.languagesDirSearch.value)
   );
 
+  const handleDirRetry = (e) => {
+    if (e.target.closest('[data-retry-directories]')) {
+      radioApi.rotateMirror();
+      state.directoriesError = false;
+      renderGenresDirectory(dom.genresDirSearch.value);
+      renderCountriesDirectory(dom.countriesDirSearch.value);
+      renderLanguagesDirectory(dom.languagesDirSearch.value);
+      loadDirectoriesAndStats();
+      return true;
+    }
+    return false;
+  };
+
   dom.genresDirGrid.addEventListener('click', (e) => {
+    if (handleDirRetry(e)) return;
     const btn = e.target.closest('[data-pick-genre]');
     if (!btn) return;
     state.filters.tag = btn.dataset.pickGenre;
     state.activePreset = null;
-    switchView('discover');
+    switchView('discover', { pushHistory: false });
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.countriesDirGrid.addEventListener('click', (e) => {
+    if (handleDirRetry(e)) return;
     const btn = e.target.closest('[data-pick-country]');
     if (!btn) return;
     state.filters.countrycode = btn.dataset.pickCountry;
     state.activePreset = null;
-    switchView('discover');
+    switchView('discover', { pushHistory: false });
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   dom.languagesDirGrid.addEventListener('click', (e) => {
+    if (handleDirRetry(e)) return;
     const btn = e.target.closest('[data-pick-language]');
     if (!btn) return;
     state.filters.language = btn.dataset.pickLanguage;
     state.activePreset = null;
-    switchView('discover');
+    switchView('discover', { pushHistory: false });
     syncControlsFromState();
-    fetchStations({ append: false });
+    fetchStations({ append: false, pushHistory: true });
   });
 
   // Favorites export / import / refresh / clear recent
@@ -1653,31 +2023,21 @@ function bindEvents() {
     showToast('Cleared recently tuned history.');
   });
 
-  // Player Deck Controls
+  // Player Deck Controls (Desktop + Mobile)
   dom.deckPlayBtn.addEventListener('click', () => radioPlayer.togglePlayPause());
   dom.deckPrevBtn.addEventListener('click', () => stepQueue(-1));
   dom.deckNextBtn.addEventListener('click', () => stepQueue(1));
 
   dom.deckTitle.addEventListener('click', () => {
-    if (radioPlayer.currentStation) {
-      openStationModal(radioPlayer.currentStation);
-    }
+    if (radioPlayer.currentStation) openStationModal(radioPlayer.currentStation);
   });
 
-  dom.deckFavBtn.addEventListener('click', () => {
-    const station = radioPlayer.currentStation;
-    if (!station) return;
-    const { added } = storage.toggleFavorite(station);
-    updateFavoriteBadges();
-    updateDeckUI(radioPlayer.getState());
-    if (state.view === 'favorites') renderFavoritesView();
-    // Update visible card heart icon too
-    const cardFav = document.querySelector(
-      `.station-card[data-station-uuid="${CSS.escape(station.stationuuid)}"] [data-action="favorite"]`
-    );
-    if (cardFav) cardFav.classList.toggle('favorited', added);
-    showToast(added ? `Saved "${station.name}"` : `Removed "${station.name}"`);
+  dom.deckMobileMoreBtn.addEventListener('click', () => {
+    if (radioPlayer.currentStation) openStationModal(radioPlayer.currentStation);
   });
+
+  dom.deckFavBtn.addEventListener('click', toggleCurrentStationFavorite);
+  dom.deckMobileFavBtn.addEventListener('click', toggleCurrentStationFavorite);
 
   dom.deckShareBtn.addEventListener('click', () => {
     if (!radioPlayer.currentStation) return;
@@ -1723,9 +2083,19 @@ function bindEvents() {
       state.filters.tag = tagBtn.dataset.modalTag;
       state.activePreset = null;
       closeStationModal();
-      switchView('discover');
+      switchView('discover', { pushHistory: false });
       syncControlsFromState();
-      fetchStations({ append: false });
+      fetchStations({ append: false, pushHistory: true });
+    }
+  });
+
+  // Browser Back / Forward navigation support
+  window.addEventListener('popstate', () => {
+    readQueryParamsIntoState();
+    switchView(state.view, { pushHistory: false });
+    syncControlsFromState();
+    if (state.view === 'discover') {
+      fetchStations({ append: false, pushHistory: false });
     }
   });
 
@@ -1739,9 +2109,15 @@ function bindEvents() {
         target.tagName === 'SELECT' ||
         target.isContentEditable);
 
-    if (e.key === 'Escape' && dom.modal.classList.contains('open')) {
-      closeStationModal();
-      return;
+    if (e.key === 'Escape') {
+      if (dom.modal.classList.contains('open')) {
+        closeStationModal();
+        return;
+      }
+      if (dom.searchSuggestions.classList.contains('open')) {
+        hideSearchSuggestions();
+        return;
+      }
     }
 
     if (isTyping) return;
@@ -1777,32 +2153,32 @@ async function init() {
   radioPlayer.setVolume(prefs.volume, prefs.muted);
   radioPlayer.attachVuCanvas(dom.vuCanvas);
   radioPlayer.onChange(updateDeckUI);
+  radioPlayer.onTick(updateDeckTick);
   radioPlayer.bindMediaSessionHandlers({
     onPrev: () => stepQueue(-1),
     onNext: () => stepQueue(1),
   });
 
-  const { stationUuid } = readInitialQueryParams();
+  const { stationUuid } = readQueryParamsIntoState();
 
   updateFavoriteBadges();
   bindEvents();
+  switchView(state.view, { pushHistory: false });
   syncControlsFromState();
   updateDeckUI(radioPlayer.getState());
 
-  // Kick off initial station fetch and directory metadata concurrently
-  fetchStations({ append: false });
+  fetchStations({ append: false, pushHistory: false });
   loadDirectoriesAndStats();
 
-  // If opened via a shared ?station=<uuid> link, fetch & load that station
   if (stationUuid) {
     try {
       const [station] = await radioApi.getStationsByUuids([stationUuid]);
       if (station) {
-        playStationFromList(station, [station]);
+        playStationFromList(station, [station], { forcePlay: true });
         showToast(`Loaded shared station: ${station.name}`);
       }
     } catch {
-      // Ignore invalid/unreachable shared station UUID
+      // Ignore unreachable shared station UUID
     }
   }
 }

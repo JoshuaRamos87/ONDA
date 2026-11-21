@@ -5,19 +5,21 @@
  * 1. Queries https://all.api.radio-browser.info/json/servers to discover active mirrors.
  * 2. Randomizes mirrors to distribute load across the community network.
  * 3. Automatically fails over to the next healthy mirror on network/timeout/5xx errors.
- * 4. Reports station clicks via /json/url/{stationuuid} and supports /json/vote/{stationuuid}.
+ * 4. Normalizes messy community metadata and deduplicates identical stream URLs.
+ * 5. Reports station clicks via /json/url/{stationuuid} and supports /json/vote/{stationuuid}.
  */
 
 const DISCOVERY_URL = 'https://all.api.radio-browser.info/json/servers';
 
-const FALLBACK_MIRRORS = [
+const NAMED_FALLBACK_MIRRORS = [
   'de1.api.radio-browser.info',
   'de2.api.radio-browser.info',
   'fi1.api.radio-browser.info',
   'at1.api.radio-browser.info',
   'nl1.api.radio-browser.info',
-  'all.api.radio-browser.info',
 ];
+
+const LAST_RESORT_MIRROR = 'all.api.radio-browser.info';
 
 function shuffle(list) {
   const arr = [...list];
@@ -26,6 +28,63 @@ function shuffle(list) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+function cleanText(val) {
+  return String(val ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Clean community-submitted station fields (many entries contain stray tabs or whitespace).
+ */
+function normalizeStation(raw) {
+  if (!raw || !raw.stationuuid) return null;
+  const name = cleanText(raw.name) || 'Untitled Station';
+  return {
+    ...raw,
+    name,
+    country: cleanText(raw.country),
+    countrycode: cleanText(raw.countrycode).toUpperCase(),
+    state: cleanText(raw.state),
+    language: cleanText(raw.language),
+    tags: cleanText(raw.tags),
+    codec: cleanText(raw.codec).toUpperCase(),
+    url: cleanText(raw.url),
+    url_resolved: cleanText(raw.url_resolved),
+    homepage: cleanText(raw.homepage),
+    favicon: cleanText(raw.favicon),
+    bitrate: Number(raw.bitrate) || 0,
+    hls: Number(raw.hls) || 0,
+    votes: Number(raw.votes) || 0,
+    clickcount: Number(raw.clickcount) || 0,
+  };
+}
+
+/**
+ * Remove duplicate entries sharing the same UUID or exact resolved stream URL.
+ */
+function dedupeStations(list) {
+  if (!Array.isArray(list)) return [];
+  const seenUuids = new Set();
+  const seenUrls = new Set();
+  const result = [];
+
+  for (const raw of list) {
+    const station = normalizeStation(raw);
+    if (!station) continue;
+    if (seenUuids.has(station.stationuuid)) continue;
+
+    const streamKey = (station.url_resolved || station.url || '').toLowerCase();
+    if (streamKey && seenUrls.has(streamKey)) continue;
+
+    seenUuids.add(station.stationuuid);
+    if (streamKey) seenUrls.add(streamKey);
+    result.push(station);
+  }
+  return result;
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
@@ -57,7 +116,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 
 class RadioBrowserClient {
   constructor() {
-    this.mirrors = shuffle(FALLBACK_MIRRORS);
+    this.mirrors = [...shuffle(NAMED_FALLBACK_MIRRORS), LAST_RESORT_MIRROR];
     this.activeIndex = 0;
     this.discovered = false;
     this.discoverPromise = null;
@@ -78,7 +137,7 @@ class RadioBrowserClient {
   }
 
   getActiveMirror() {
-    return this.mirrors[this.activeIndex] || FALLBACK_MIRRORS[0];
+    return this.mirrors[this.activeIndex] || NAMED_FALLBACK_MIRRORS[0];
   }
 
   /**
@@ -100,25 +159,30 @@ class RadioBrowserClient {
               new Set(
                 data
                   .map((entry) => (entry && entry.name ? String(entry.name).trim() : ''))
-                  .filter((name) => name && name.endsWith('.api.radio-browser.info'))
+                  .filter(
+                    (name) =>
+                      name &&
+                      name !== LAST_RESORT_MIRROR &&
+                      name.endsWith('.api.radio-browser.info')
+                  )
               )
             );
 
             if (uniqueHosts.length > 0) {
               const randomized = shuffle(uniqueHosts);
-              // Keep fallback mirrors at the tail in case all discovered hosts fail
-              for (const fallback of FALLBACK_MIRRORS) {
+              for (const fallback of NAMED_FALLBACK_MIRRORS) {
                 if (!randomized.includes(fallback)) {
                   randomized.push(fallback);
                 }
               }
+              randomized.push(LAST_RESORT_MIRROR);
               this.mirrors = randomized;
               this.activeIndex = 0;
             }
           }
         }
       } catch {
-        // Silently keep randomized fallback mirror list
+        // Silently keep randomized named fallback mirror list
       } finally {
         this.discovered = true;
         this.emitMirrorChange('connected');
@@ -167,7 +231,11 @@ class RadioBrowserClient {
       const url = `https://${host}${fullPath}`;
 
       try {
-        const res = await fetchWithTimeout(url, { signal: options.signal }, options.timeoutMs || 8500);
+        const res = await fetchWithTimeout(
+          url,
+          { signal: options.signal },
+          options.timeoutMs || 8500
+        );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status} from ${host}`);
         }
@@ -194,16 +262,10 @@ class RadioBrowserClient {
     throw lastError || new Error('All Radio Browser API mirrors failed to respond.');
   }
 
-  /**
-   * Global database statistics (stations, countries, tags, languages, clicks)
-   */
   async getStats() {
     return this.request('/json/stats', {}, { cache: true });
   }
 
-  /**
-   * Advanced station search with filtering, sorting, and pagination.
-   */
   async searchStations(filters = {}, signal) {
     const params = {
       hidebroken: 'true',
@@ -225,37 +287,31 @@ class RadioBrowserClient {
       params.is_https = 'true';
     }
 
-    const stations = await this.request('/json/stations/search', params, { signal });
-    return Array.isArray(stations) ? stations : [];
+    const rawStations = await this.request('/json/stations/search', params, { signal });
+    const rawCount = Array.isArray(rawStations) ? rawStations.length : 0;
+    const stations = dedupeStations(rawStations);
+    return { stations, rawCount };
   }
 
-  /**
-   * Fetch fresh station records by an array of stationuuid strings.
-   */
   async getStationsByUuids(uuids) {
     if (!Array.isArray(uuids) || uuids.length === 0) return [];
     const stations = await this.request('/json/stations/byuuid', {
       uuids: uuids.join(','),
     });
-    return Array.isArray(stations) ? stations : [];
+    return dedupeStations(stations);
   }
 
-  /**
-   * Fetch a batch of random working stations for "Surprise Me".
-   */
-  async getRandomStations(httpsOnly = true, limit = 12) {
-    return this.searchStations({
+  async getRandomStations(httpsOnly = true, limit = 14) {
+    const { stations } = await this.searchStations({
       order: 'random',
       reverse: false,
       limit,
       httpsOnly,
     });
+    return stations;
   }
 
-  /**
-   * Top genres / tags sorted by station count.
-   */
-  async getTags(limit = 160) {
+  async getTags(limit = 180) {
     const data = await this.request(
       '/json/tags',
       {
@@ -267,13 +323,16 @@ class RadioBrowserClient {
       { cache: true }
     );
     return Array.isArray(data)
-      ? data.filter((t) => t && t.name && t.name.trim().length > 1 && Number(t.stationcount) > 0)
+      ? data
+          .map((t) => ({
+            ...t,
+            name: cleanText(t?.name),
+            stationcount: Number(t?.stationcount) || 0,
+          }))
+          .filter((t) => t.name.length > 1 && t.stationcount > 0)
       : [];
   }
 
-  /**
-   * Countries with ISO 3166-1 alpha-2 codes and station counts.
-   */
   async getCountries() {
     const data = await this.request(
       '/json/countries',
@@ -285,14 +344,18 @@ class RadioBrowserClient {
       { cache: true }
     );
     return Array.isArray(data)
-      ? data.filter((c) => c && c.name && c.iso_3166_1 && Number(c.stationcount) > 0)
+      ? data
+          .map((c) => ({
+            ...c,
+            name: cleanText(c?.name),
+            iso_3166_1: cleanText(c?.iso_3166_1).toUpperCase(),
+            stationcount: Number(c?.stationcount) || 0,
+          }))
+          .filter((c) => c.name && c.iso_3166_1 && c.stationcount > 0)
       : [];
   }
 
-  /**
-   * Spoken languages sorted by station count.
-   */
-  async getLanguages(limit = 120) {
+  async getLanguages(limit = 140) {
     const data = await this.request(
       '/json/languages',
       {
@@ -304,14 +367,16 @@ class RadioBrowserClient {
       { cache: true }
     );
     return Array.isArray(data)
-      ? data.filter((l) => l && l.name && l.name.trim().length > 1 && Number(l.stationcount) > 0)
+      ? data
+          .map((l) => ({
+            ...l,
+            name: cleanText(l?.name),
+            stationcount: Number(l?.stationcount) || 0,
+          }))
+          .filter((l) => l.name.length > 1 && l.stationcount > 0)
       : [];
   }
 
-  /**
-   * Register a playback click (requested by Radio Browser API guidelines).
-   * Non-blocking; errors are safely ignored.
-   */
   async registerClick(stationuuid) {
     if (!stationuuid) return;
     try {
@@ -321,9 +386,6 @@ class RadioBrowserClient {
     }
   }
 
-  /**
-   * Upvote a station on the Radio Browser directory.
-   */
   async voteStation(stationuuid) {
     if (!stationuuid) throw new Error('Missing station UUID');
     return this.request(`/json/vote/${encodeURIComponent(stationuuid)}`, {}, { timeoutMs: 6000 });

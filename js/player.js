@@ -4,11 +4,18 @@
  * Handles direct Icecast/Shoutcast audio streams (MP3, AAC, OGG, FLAC) via HTML5 <audio>
  * AND adaptive HLS (.m3u8) streams via hls.js (with native Safari HLS support).
  *
- * Note: Intentionally omits `crossOrigin="anonymous"` on <audio> so CORS-free
- * Icecast/Shoutcast servers worldwide play reliably without silent CORS blocks.
+ * Edge-case hardening:
+ * - Playback session token ignores stale async/HLS/error events during rapid station switching.
+ * - 12-second connection watchdog prevents getting stuck on "TUNING" on blackholed servers.
+ * - Smart candidate URL list prioritizes HTTPS streams on HTTPS pages (e.g., GitHub Pages)
+ *   so an HTTP url_resolved still falls back to an HTTPS station.url before failing.
+ * - Pausing a live broadcast tears down the stale buffer; resuming reconnects to the live edge.
+ * - Separate 1-second tick channel prevents DOM churn and keeps CSS animations smooth.
  */
 
 import { radioApi } from './api.js';
+
+const CONNECT_TIMEOUT_MS = 12000;
 
 export class RadioPlayer {
   constructor() {
@@ -19,7 +26,11 @@ export class RadioPlayer {
     this.currentStation = null;
     this.status = 'idle'; // idle | loading | playing | paused | error
     this.errorMessage = '';
-    this.fallbackAttempted = false;
+
+    this.sessionId = 0;
+    this.candidateUrls = [];
+    this.candidateIndex = 0;
+    this.connectTimer = null;
 
     this.elapsedSeconds = 0;
     this.elapsedInterval = null;
@@ -29,6 +40,8 @@ export class RadioPlayer {
     this.sleepMinutes = 0;
 
     this.listeners = new Set();
+    this.tickListeners = new Set();
+
     this.vuCanvas = null;
     this.vuRaf = null;
     this.vuBars = new Array(14).fill(0.08);
@@ -42,10 +55,26 @@ export class RadioPlayer {
     return () => this.listeners.delete(callback);
   }
 
+  onTick(callback) {
+    this.tickListeners.add(callback);
+    return () => this.tickListeners.delete(callback);
+  }
+
   emit() {
     const snapshot = this.getState();
     for (const cb of this.listeners) {
       cb(snapshot);
+    }
+  }
+
+  emitTick() {
+    const tick = {
+      elapsedSeconds: this.elapsedSeconds,
+      sleepRemainingMs: this.sleepEndTime ? Math.max(0, this.sleepEndTime - Date.now()) : 0,
+      sleepMinutes: this.sleepMinutes,
+    };
+    for (const cb of this.tickListeners) {
+      cb(tick);
     }
   }
 
@@ -75,8 +104,25 @@ export class RadioPlayer {
     return this.audio.muted;
   }
 
+  clearConnectTimeout() {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  armConnectTimeout(sessionId) {
+    this.clearConnectTimeout();
+    this.connectTimer = setTimeout(() => {
+      if (sessionId !== this.sessionId || this.status !== 'loading') return;
+      this.handlePlaybackFailure(sessionId, 'timed out');
+    }, CONNECT_TIMEOUT_MS);
+  }
+
   bindAudioEvents() {
     this.audio.addEventListener('playing', () => {
+      if (!this.currentStation || this.status === 'paused' || this.status === 'idle') return;
+      this.clearConnectTimeout();
       this.status = 'playing';
       this.errorMessage = '';
       this.startTimer();
@@ -85,14 +131,22 @@ export class RadioPlayer {
     });
 
     this.audio.addEventListener('waiting', () => {
-      if (this.currentStation && this.status !== 'paused' && this.status !== 'error') {
+      if (this.currentStation && this.status === 'playing') {
         this.status = 'loading';
+        this.armConnectTimeout(this.sessionId);
         this.emit();
       }
     });
 
+    this.audio.addEventListener('stalled', () => {
+      if (this.currentStation && this.status === 'loading') {
+        this.armConnectTimeout(this.sessionId);
+      }
+    });
+
     this.audio.addEventListener('pause', () => {
-      if (this.status !== 'error' && this.status !== 'idle') {
+      if (this.status === 'playing') {
+        this.clearConnectTimeout();
         this.status = 'paused';
         this.stopTimer();
         this.updateMediaSessionState('paused');
@@ -101,8 +155,10 @@ export class RadioPlayer {
     });
 
     this.audio.addEventListener('error', () => {
-      if (!this.currentStation) return;
-      this.handlePlaybackFailure();
+      if (!this.currentStation || this.status === 'paused' || this.status === 'idle') return;
+      // Ignore error fired when we intentionally clear src on pause/stop
+      if (!this.audio.getAttribute('src') && !this.hls) return;
+      this.handlePlaybackFailure(this.sessionId);
     });
   }
 
@@ -117,63 +173,103 @@ export class RadioPlayer {
     }
   }
 
+  teardownStream() {
+    this.clearConnectTimeout();
+    this.destroyHls();
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    try {
+      this.audio.load();
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Build ordered candidate URLs for a station, preferring HTTPS on HTTPS origins.
+   */
+  buildCandidateUrls(station) {
+    const rawList = [station.url_resolved, station.url]
+      .map((u) => (u ? String(u).trim() : ''))
+      .filter((u) => /^https?:\/\//i.test(u));
+
+    const unique = Array.from(new Set(rawList));
+    const isHttpsPage = window.location.protocol === 'https:';
+
+    if (!isHttpsPage) {
+      return { playable: unique, blockedHttpOnly: false };
+    }
+
+    const httpsUrls = unique.filter((u) => u.toLowerCase().startsWith('https://'));
+    if (httpsUrls.length > 0) {
+      return { playable: httpsUrls, blockedHttpOnly: false };
+    }
+
+    return { playable: [], blockedHttpOnly: unique.length > 0 };
+  }
+
   /**
    * Play a station object from the Radio Browser API.
+   * Pass { forcePlay: true } to ensure an already-playing station stays playing instead of pausing.
    */
-  async playStation(station) {
+  async playStation(station, { forcePlay = false } = {}) {
     if (!station) return;
 
-    // Toggle pause/resume if clicking the currently active station
-    if (
-      this.currentStation &&
-      this.currentStation.stationuuid === station.stationuuid &&
-      this.status === 'playing'
-    ) {
-      this.pause();
+    const isSame =
+      this.currentStation && this.currentStation.stationuuid === station.stationuuid;
+
+    if (isSame && this.status === 'playing') {
+      if (!forcePlay) this.pause();
       return;
     }
 
-    if (
-      this.currentStation &&
-      this.currentStation.stationuuid === station.stationuuid &&
-      this.status === 'paused'
-    ) {
+    if (isSame && this.status === 'paused') {
       this.resume();
       return;
     }
 
-    this.destroyHls();
+    if (isSame && this.status === 'loading') {
+      if (!forcePlay) this.pause();
+      return;
+    }
+
+    const sessionId = ++this.sessionId;
+    this.teardownStream();
     this.stopTimer();
     this.elapsedSeconds = 0;
-    this.fallbackAttempted = false;
     this.currentStation = station;
     this.status = 'loading';
     this.errorMessage = '';
     this.emit();
+    this.emitTick();
 
     this.updateMediaSessionMetadata(station);
-
-    // Report click to Radio Browser per API guidelines
     radioApi.registerClick(station.stationuuid);
 
-    const primaryUrl = station.url_resolved || station.url;
-    if (!primaryUrl) {
-      this.failWithMessage('This station does not provide a stream URL.');
+    const { playable, blockedHttpOnly } = this.buildCandidateUrls(station);
+
+    if (playable.length === 0) {
+      if (blockedHttpOnly) {
+        this.failWithMessage(
+          sessionId,
+          'Blocked by browser mixed-content security (HTTP-only stream on an HTTPS site). Keep "HTTPS only" enabled or open the station site.'
+        );
+      } else {
+        this.failWithMessage(sessionId, 'This station does not provide a valid stream URL.');
+      }
       return;
     }
 
-    // Warn cleanly if an HTTP stream is attempted on an HTTPS host (like GitHub Pages)
-    if (window.location.protocol === 'https:' && primaryUrl.startsWith('http://')) {
-      this.failWithMessage(
-        'Blocked by browser mixed-content security (HTTP stream on an HTTPS page). Enable "HTTPS only" or open the station homepage.'
-      );
-      return;
-    }
-
-    await this.loadUrl(primaryUrl, station);
+    this.candidateUrls = playable;
+    this.candidateIndex = 0;
+    await this.loadUrl(this.candidateUrls[0], station, sessionId);
   }
 
-  async loadUrl(streamUrl, station) {
+  async loadUrl(streamUrl, station, sessionId) {
+    if (sessionId !== this.sessionId) return;
+
+    this.armConnectTimeout(sessionId);
+
     const isHls =
       Number(station.hls) === 1 || /\.m3u8(\?.*)?$/i.test(streamUrl);
 
@@ -181,26 +277,29 @@ export class RadioPlayer {
       // Safari / iOS supports HLS natively
       if (this.audio.canPlayType('application/vnd.apple.mpegurl')) {
         this.audio.src = streamUrl;
-        this.tryPlay();
+        this.tryPlay(sessionId);
         return;
       }
 
-      // Other modern browsers use hls.js if loaded
+      // Chromium / Firefox via hls.js
       if (typeof window.Hls !== 'undefined' && window.Hls.isSupported()) {
         this.destroyHls();
-        this.hls = new window.Hls({
+        const hls = new window.Hls({
           enableWorker: true,
           lowLatencyMode: false,
           backBufferLength: 30,
         });
-        this.hls.loadSource(streamUrl);
-        this.hls.attachMedia(this.audio);
-        this.hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-          this.tryPlay();
+        this.hls = hls;
+        hls.loadSource(streamUrl);
+        hls.attachMedia(this.audio);
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+          if (sessionId !== this.sessionId) return;
+          this.tryPlay(sessionId);
         });
-        this.hls.on(window.Hls.Events.ERROR, (_event, data) => {
+        hls.on(window.Hls.Events.ERROR, (_event, data) => {
+          if (sessionId !== this.sessionId) return;
           if (data && data.fatal) {
-            this.handlePlaybackFailure();
+            this.handlePlaybackFailure(sessionId);
           }
         });
         return;
@@ -209,77 +308,97 @@ export class RadioPlayer {
 
     this.audio.src = streamUrl;
     this.audio.load();
-    this.tryPlay();
+    this.tryPlay(sessionId);
   }
 
-  async tryPlay() {
+  async tryPlay(sessionId) {
     try {
       await this.audio.play();
     } catch (err) {
+      if (sessionId !== this.sessionId) return;
       if (err && err.name === 'AbortError') {
-        // Interrupted by switching to another station
         return;
       }
       if (err && err.name === 'NotAllowedError') {
+        this.clearConnectTimeout();
         this.status = 'paused';
         this.errorMessage = 'Click Play to start audio (browser autoplay policy).';
         this.emit();
         return;
       }
-      this.handlePlaybackFailure();
+      this.handlePlaybackFailure(sessionId);
     }
   }
 
-  handlePlaybackFailure() {
-    if (!this.currentStation) return;
+  handlePlaybackFailure(sessionId, reason = '') {
+    if (sessionId !== this.sessionId || !this.currentStation) return;
 
-    // Try fallback to raw station.url once if it differs from url_resolved
-    const altUrl = this.currentStation.url;
-    const primaryUrl = this.currentStation.url_resolved;
-    if (
-      !this.fallbackAttempted &&
-      altUrl &&
-      altUrl !== primaryUrl &&
-      !(window.location.protocol === 'https:' && altUrl.startsWith('http://'))
-    ) {
-      this.fallbackAttempted = true;
+    this.clearConnectTimeout();
+    this.candidateIndex += 1;
+
+    if (this.candidateIndex < this.candidateUrls.length) {
       this.destroyHls();
-      this.loadUrl(altUrl, this.currentStation);
+      this.loadUrl(this.candidateUrls[this.candidateIndex], this.currentStation, sessionId);
       return;
     }
 
-    this.destroyHls();
+    this.teardownStream();
     this.stopTimer();
-    this.failWithMessage(
-      'Unable to tune into this stream right now — the broadcaster may be offline, geo-restricted, or blocking browser playback.'
-    );
+    const msg =
+      reason === 'timed out'
+        ? 'Connection timed out — this broadcaster is taking too long to respond.'
+        : 'Unable to tune into this stream right now — the broadcaster may be offline, geo-restricted, or blocking browser playback.';
+    this.failWithMessage(sessionId, msg);
   }
 
-  failWithMessage(msg) {
+  failWithMessage(sessionId, msg) {
+    if (sessionId !== this.sessionId) return;
+    this.clearConnectTimeout();
     this.status = 'error';
     this.errorMessage = msg;
     this.stopTimer();
+    this.updateMediaSessionState('paused');
     this.emit();
   }
 
+  /**
+   * Pause live stream cleanly by releasing the stream socket so resuming later jumps to the live edge.
+   */
   pause() {
-    this.audio.pause();
+    this.sessionId += 1;
+    this.teardownStream();
     this.status = 'paused';
     this.stopTimer();
+    this.updateMediaSessionState('paused');
     this.emit();
   }
 
+  /**
+   * Reconnect cleanly to the live broadcast edge.
+   */
   resume() {
     if (!this.currentStation) return;
-    if (this.status === 'error') {
-      const station = this.currentStation;
-      this.currentStation = null;
-      this.playStation(station);
+    const station = this.currentStation;
+    const sessionId = ++this.sessionId;
+    this.teardownStream();
+    this.status = 'loading';
+    this.errorMessage = '';
+    this.emit();
+
+    const { playable, blockedHttpOnly } = this.buildCandidateUrls(station);
+    if (playable.length === 0) {
+      this.failWithMessage(
+        sessionId,
+        blockedHttpOnly
+          ? 'Blocked by browser mixed-content security (HTTP-only stream on an HTTPS site).'
+          : 'This station does not provide a valid stream URL.'
+      );
       return;
     }
-    this.status = 'loading';
-    this.emit();
-    this.tryPlay();
+
+    this.candidateUrls = playable;
+    this.candidateIndex = 0;
+    this.loadUrl(this.candidateUrls[0], station, sessionId);
   }
 
   togglePlayPause() {
@@ -292,15 +411,15 @@ export class RadioPlayer {
   }
 
   stop() {
-    this.destroyHls();
-    this.audio.pause();
-    this.audio.removeAttribute('src');
-    this.audio.load();
+    this.sessionId += 1;
+    this.teardownStream();
     this.stopTimer();
     this.elapsedSeconds = 0;
     this.status = 'idle';
     this.errorMessage = '';
+    this.updateMediaSessionState('none');
     this.emit();
+    this.emitTick();
   }
 
   startTimer() {
@@ -308,7 +427,7 @@ export class RadioPlayer {
     this.elapsedInterval = setInterval(() => {
       if (this.status === 'playing') {
         this.elapsedSeconds += 1;
-        this.emit();
+        this.emitTick();
       }
     }, 1000);
   }
@@ -320,9 +439,6 @@ export class RadioPlayer {
     }
   }
 
-  /**
-   * Sleep timer: automatically pauses playback after N minutes.
-   */
   setSleepTimer(minutes) {
     if (this.sleepInterval) {
       clearInterval(this.sleepInterval);
@@ -334,6 +450,7 @@ export class RadioPlayer {
     if (mins <= 0) {
       this.sleepEndTime = null;
       this.emit();
+      this.emitTick();
       return;
     }
 
@@ -346,16 +463,15 @@ export class RadioPlayer {
         clearInterval(this.sleepInterval);
         this.sleepInterval = null;
         this.pause();
+        this.emitTick();
       } else {
-        this.emit();
+        this.emitTick();
       }
     }, 1000);
     this.emit();
+    this.emitTick();
   }
 
-  /**
-   * OS / Hardware Media Session integration (keyboard media keys & lock screen).
-   */
   bindMediaSessionHandlers({ onPrev, onNext }) {
     if (!('mediaSession' in navigator)) return;
     try {
@@ -378,7 +494,8 @@ export class RadioPlayer {
           : [];
       navigator.mediaSession.metadata = new MediaMetadata({
         title: station.name || 'ONDA World Radio',
-        artist: [station.country, station.tags?.split(',')[0]].filter(Boolean).join(' · ') || 'Live Radio',
+        artist:
+          [station.country, station.tags?.split(',')[0]].filter(Boolean).join(' · ') || 'Live Radio',
         album: 'ONDA Broadcast Tuner',
         artwork,
       });
@@ -396,9 +513,6 @@ export class RadioPlayer {
     }
   }
 
-  /**
-   * Tactile broadcast VU / level meter canvas animation driven by playback state & volume.
-   */
   attachVuCanvas(canvas) {
     this.vuCanvas = canvas;
     if (!canvas) return;
@@ -423,7 +537,6 @@ export class RadioPlayer {
       if (frame % 6 === 0) {
         for (let i = 0; i < count; i++) {
           if (isPlaying) {
-            // Natural bell-curve frequency weighting across bars
             const centerBias = 1 - Math.abs(i - (count - 1) / 2) / (count * 0.72);
             this.vuTargets[i] = Math.min(
               1,
