@@ -386,6 +386,10 @@ function applyTheme(theme) {
   const isDark = theme === 'dark';
   dom.themeIconSun.style.display = isDark ? 'block' : 'none';
   dom.themeIconMoon.style.display = isDark ? 'none' : 'block';
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) {
+    themeMeta.setAttribute('content', isDark ? '#141619' : '#F5F2EC');
+  }
   storage.setPref('theme', theme);
 }
 
@@ -1554,8 +1558,11 @@ function openStationModal(station) {
     ${hasGeo ? `<a class="btn-ghost-sm" href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(station.geo_lat)}&mlon=${encodeURIComponent(station.geo_long)}#map=8/${encodeURIComponent(station.geo_lat)}/${encodeURIComponent(station.geo_long)}" target="_blank" rel="noopener noreferrer">Map ↗</a>` : ''}
   `;
 
+  if (dom.aboutModal.classList.contains('open')) {
+    dom.aboutModal.classList.remove('open');
+  }
   dom.modal.classList.add('open');
-  document.body.classList.add('modal-open');
+  lockPageScroll();
   dom.modalCloseBtn.focus();
 
   document.getElementById('modal-sleep-select')?.addEventListener('change', (e) => {
@@ -1622,8 +1629,10 @@ function openStationModal(station) {
 
 function closeStationModal() {
   dom.modal.classList.remove('open');
-  document.body.classList.remove('modal-open');
   state.modalStation = null;
+  if (!isAnyModalOpen()) {
+    unlockPageScroll();
+  }
   if (state.lastFocusedEl && typeof state.lastFocusedEl.focus === 'function') {
     state.lastFocusedEl.focus();
   }
@@ -2095,10 +2104,16 @@ function bindEvents() {
     dom.deckErrorStrip.classList.remove('visible');
   });
 
-  // Modal close & tag clicks
+  // Modal close & tag clicks (guard against drag-from-inside accidental dismiss)
+  let modalPointerDownTarget = null;
+  dom.modal.addEventListener('pointerdown', (e) => {
+    modalPointerDownTarget = e.target;
+  });
   dom.modalCloseBtn.addEventListener('click', closeStationModal);
   dom.modal.addEventListener('click', (e) => {
-    if (e.target === dom.modal) closeStationModal();
+    if (e.target === dom.modal && modalPointerDownTarget === dom.modal) {
+      closeStationModal();
+    }
     const tagBtn = e.target.closest('[data-modal-tag]');
     if (tagBtn) {
       state.filters.tag = tagBtn.dataset.modalTag;
@@ -2111,11 +2126,17 @@ function bindEvents() {
   });
 
   // About modal & PWA install buttons
+  let aboutPointerDownTarget = null;
+  dom.aboutModal.addEventListener('pointerdown', (e) => {
+    aboutPointerDownTarget = e.target;
+  });
   dom.aboutBtn.addEventListener('click', openAboutModal);
   dom.footerAboutBtn.addEventListener('click', openAboutModal);
   dom.aboutCloseBtn.addEventListener('click', closeAboutModal);
   dom.aboutModal.addEventListener('click', (e) => {
-    if (e.target === dom.aboutModal) closeAboutModal();
+    if (e.target === dom.aboutModal && aboutPointerDownTarget === dom.aboutModal) {
+      closeAboutModal();
+    }
   });
 
   dom.installAppBtn.addEventListener('click', promptInstallPwa);
@@ -2131,7 +2152,7 @@ function bindEvents() {
     }
   });
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts & modal focus trap
   document.addEventListener('keydown', (e) => {
     const target = e.target;
     const isTyping =
@@ -2156,6 +2177,15 @@ function bindEvents() {
       }
     }
 
+    // Keep Tab focus trapped inside any active modal and disable background shortcuts
+    const activeModal = getActiveModal();
+    if (activeModal) {
+      if (e.key === 'Tab') {
+        trapFocusInModal(activeModal, e);
+      }
+      return;
+    }
+
     if (isTyping) return;
 
     if (e.key === '/') {
@@ -2178,6 +2208,67 @@ function bindEvents() {
       tuneSurpriseStation();
     }
   });
+}
+
+/* ==========================================================================
+   Cross-Browser Modal Scroll Lock & Focus Trap
+   ========================================================================== */
+
+let pageScrollLocked = false;
+let lockedScrollY = 0;
+
+function isAnyModalOpen() {
+  return dom.modal.classList.contains('open') || dom.aboutModal.classList.contains('open');
+}
+
+function getActiveModal() {
+  if (dom.aboutModal.classList.contains('open')) return dom.aboutModal;
+  if (dom.modal.classList.contains('open')) return dom.modal;
+  return null;
+}
+
+function lockPageScroll() {
+  if (pageScrollLocked) return;
+  lockedScrollY = window.scrollY || window.pageYOffset || 0;
+  const scrollbarGap = window.innerWidth - document.documentElement.clientWidth;
+
+  document.documentElement.classList.add('modal-open');
+  document.body.classList.add('modal-open');
+  document.body.style.top = `-${lockedScrollY}px`;
+  if (scrollbarGap > 0) {
+    document.body.style.paddingRight = `${scrollbarGap}px`;
+  }
+  pageScrollLocked = true;
+}
+
+function unlockPageScroll() {
+  if (!pageScrollLocked) return;
+  document.documentElement.classList.remove('modal-open');
+  document.body.classList.remove('modal-open');
+  document.body.style.top = '';
+  document.body.style.paddingRight = '';
+  pageScrollLocked = false;
+  window.scrollTo({ top: lockedScrollY, behavior: 'instant' });
+}
+
+function trapFocusInModal(modalBackdrop, event) {
+  const focusable = Array.from(
+    modalBackdrop.querySelectorAll(
+      'a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el.offsetParent !== null);
+
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 /* ==========================================================================
@@ -2218,6 +2309,10 @@ function populateAppConfigMetadata() {
 }
 
 function openAboutModal() {
+  if (dom.modal.classList.contains('open')) {
+    dom.modal.classList.remove('open');
+    state.modalStation = null;
+  }
   state.lastFocusedEl = document.activeElement;
   populateAppConfigMetadata();
   dom.aboutSpecMirror.textContent = radioApi.getActiveMirror();
@@ -2226,14 +2321,14 @@ function openAboutModal() {
   syncInstallButtons();
 
   dom.aboutModal.classList.add('open');
-  document.body.classList.add('modal-open');
+  lockPageScroll();
   dom.aboutCloseBtn.focus();
 }
 
 function closeAboutModal() {
   dom.aboutModal.classList.remove('open');
-  if (!dom.modal.classList.contains('open')) {
-    document.body.classList.remove('modal-open');
+  if (!isAnyModalOpen()) {
+    unlockPageScroll();
   }
   if (state.lastFocusedEl && typeof state.lastFocusedEl.focus === 'function') {
     state.lastFocusedEl.focus();

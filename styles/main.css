@@ -1762,9 +1762,12 @@ img {
   z-index: 80;
   background: rgba(16, 18, 24, 0.56);
   backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
   display: none;
   place-items: center;
   padding: 20px;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .modal-backdrop.open {
@@ -1775,7 +1778,10 @@ img {
   width: 100%;
   max-width: 540px;
   max-height: 88vh;
+  max-height: 88dvh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--bg-surface);
@@ -2016,12 +2022,26 @@ img {
 
 @media (max-width: 680px) {
   .header-inner {
-    padding: 0 14px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
     gap: 10px;
+    min-height: auto;
+  }
+
+  .brand {
+    order: 1;
+  }
+
+  .header-actions {
+    order: 2;
+    margin-left: auto;
+    gap: 6px;
   }
 
   .header-search {
-    flex: 1 1 auto;
+    order: 3;
+    flex: 1 0 100%;
+    max-width: 100%;
     min-width: 0;
   }
 
@@ -2042,9 +2062,15 @@ img {
   }
 
   .btn-tune {
-    width: 38px;
+    width: 36px;
+    height: 36px;
     padding: 0;
     justify-content: center;
+  }
+
+  .header-actions .icon-btn {
+    width: 36px;
+    height: 36px;
   }
 
   .page-main {
@@ -2142,8 +2168,18 @@ img {
    Smart Search Suggestions, Sleep Countdown & Modal Enhancements
    ========================================================================== */
 
+html.modal-open {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
 body.modal-open {
-  overflow: hidden;
+  overflow: hidden !important;
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  overscroll-behavior: none;
 }
 
 .deck-mobile-only {
