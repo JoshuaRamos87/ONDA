@@ -107,6 +107,7 @@ const state = {
   modalStation: null,
   lastFocusedEl: null,
   votedUuids: new Set(),
+  surpriseHistory: new Set(),
   deferredInstallPrompt: null,
 };
 
@@ -745,14 +746,16 @@ function renderSkeletons(count = 12) {
     .join('');
 }
 
-async function fetchStations({ append = false, pushHistory = false } = {}) {
+async function fetchStations({ append = false, pushHistory = false, preserveOffset = false } = {}) {
   if (state.abortController) {
     state.abortController.abort();
   }
   state.abortController = new AbortController();
 
   if (!append) {
-    state.offset = 0;
+    if (!preserveOffset) {
+      state.offset = 0;
+    }
     state.stations = [];
     renderSkeletons(12);
     dom.resultsCount.textContent = 'Tuning…';
@@ -768,7 +771,7 @@ async function fetchStations({ append = false, pushHistory = false } = {}) {
   }
 
   try {
-    const { stations: batch, rawCount } = await radioApi.searchStations(
+    let { stations: batch, rawCount } = await radioApi.searchStations(
       {
         ...state.filters,
         limit: PAGE_SIZE,
@@ -776,6 +779,21 @@ async function fetchStations({ append = false, pushHistory = false } = {}) {
       },
       state.abortController.signal
     );
+
+    // If a randomized reshuffle offset overshot a narrow filter, fall back cleanly to offset 0
+    if (!append && preserveOffset && batch.length === 0 && state.offset > 0) {
+      state.offset = 0;
+      const retry = await radioApi.searchStations(
+        {
+          ...state.filters,
+          limit: PAGE_SIZE,
+          offset: 0,
+        },
+        state.abortController.signal
+      );
+      batch = retry.stations;
+      rawCount = retry.rawCount;
+    }
 
     if (append) {
       const existingIds = new Set(state.stations.map((s) => s.stationuuid));
@@ -1440,16 +1458,34 @@ async function tuneSurpriseStation() {
   dom.surpriseSpinner.style.display = 'inline-block';
 
   try {
-    const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 14);
+    const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 40);
     if (candidates.length === 0) {
       showToast('Could not find a random station right now.');
       return;
     }
+
     const currentUuid = radioPlayer.currentStation?.stationuuid;
-    const pick =
-      candidates.find((s) => s.stationuuid !== currentUuid) || candidates[0];
-    state.queue = candidates;
-    playStationFromList(pick, candidates, { forcePlay: true });
+    let unseen = candidates.filter(
+      (s) => s.stationuuid !== currentUuid && !state.surpriseHistory.has(s.stationuuid)
+    );
+
+    if (unseen.length === 0) {
+      state.surpriseHistory.clear();
+      unseen = candidates.filter((s) => s.stationuuid !== currentUuid);
+    }
+
+    const pool = unseen.length > 0 ? unseen : candidates;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+
+    state.surpriseHistory.add(pick.stationuuid);
+    if (state.surpriseHistory.size > 200) {
+      state.surpriseHistory.clear();
+      state.surpriseHistory.add(pick.stationuuid);
+    }
+
+    // Place chosen station at the front of the shuffled queue so Prev/Next steps through varied picks
+    state.queue = [pick, ...candidates.filter((s) => s.stationuuid !== pick.stationuuid)];
+    playStationFromList(pick, state.queue, { forcePlay: true });
     showToast(`Tuned to ${pick.name} (${pick.country || 'Worldwide'})`);
   } catch {
     showToast('Failed to fetch a random station. Try again.');
@@ -1874,7 +1910,8 @@ function bindEvents() {
   // Active filter chip removal & reshuffle
   dom.activeFilters.addEventListener('click', (e) => {
     if (e.target.closest('[data-reshuffle]')) {
-      fetchStations({ append: false });
+      state.offset = Math.floor(Math.random() * 1200);
+      fetchStations({ append: false, preserveOffset: true });
       return;
     }
     const btn = e.target.closest('[data-remove-filter]');

@@ -231,9 +231,13 @@ class RadioBrowserClient {
       const url = `https://${host}${fullPath}`;
 
       try {
+        const fetchOpts = { signal: options.signal };
+        if (options.noCache) {
+          fetchOpts.cache = 'no-store';
+        }
         const res = await fetchWithTimeout(
           url,
-          { signal: options.signal },
+          fetchOpts,
           options.timeoutMs || 8500
         );
         if (!res.ok) {
@@ -267,6 +271,7 @@ class RadioBrowserClient {
   }
 
   async searchStations(filters = {}, signal) {
+    const isRandom = filters.order === 'random';
     const params = {
       hidebroken: 'true',
       limit: filters.limit ?? 36,
@@ -287,9 +292,15 @@ class RadioBrowserClient {
       params.is_https = 'true';
     }
 
-    const rawStations = await this.request('/json/stations/search', params, { signal });
+    const rawStations = await this.request('/json/stations/search', params, {
+      signal,
+      noCache: isRandom || Boolean(filters.noCache),
+    });
     const rawCount = Array.isArray(rawStations) ? rawStations.length : 0;
-    const stations = dedupeStations(rawStations);
+    let stations = dedupeStations(rawStations);
+    if (isRandom) {
+      stations = shuffle(stations);
+    }
     return { stations, rawCount };
   }
 
@@ -301,14 +312,44 @@ class RadioBrowserClient {
     return dedupeStations(stations);
   }
 
-  async getRandomStations(httpsOnly = true, limit = 14) {
-    const { stations } = await this.searchStations({
-      order: 'random',
-      reverse: false,
+  /**
+   * Sample a truly varied batch of live stations across the catalog.
+   * Uses a randomized offset + sort facet + Fisher-Yates shuffle to bypass
+   * Radio Browser's 60s Redis cache on identical `order=random&offset=0` URLs.
+   */
+  async getRandomStations(httpsOnly = true, limit = 40) {
+    const facets = [
+      { order: 'clickcount', maxOffset: 3500 },
+      { order: 'votes', maxOffset: 3000 },
+      { order: 'clicktrend', maxOffset: 2000 },
+      { order: 'random', maxOffset: 1500 },
+    ];
+    const facet = facets[Math.floor(Math.random() * facets.length)];
+    const randomOffset = Math.floor(Math.random() * facet.maxOffset);
+
+    let { stations } = await this.searchStations({
+      order: facet.order,
+      reverse: facet.order !== 'random',
+      offset: randomOffset,
       limit,
       httpsOnly,
+      noCache: true,
     });
-    return stations;
+
+    // Fallback to offset 0 if a randomized offset overshot a filtered catalog
+    if (stations.length < 5) {
+      const fallback = await this.searchStations({
+        order: 'clickcount',
+        reverse: true,
+        offset: 0,
+        limit,
+        httpsOnly,
+        noCache: true,
+      });
+      stations = fallback.stations;
+    }
+
+    return shuffle(stations);
   }
 
   async getTags(limit = 180) {
