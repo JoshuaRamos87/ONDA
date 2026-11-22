@@ -112,6 +112,9 @@ const state = {
   deferredInstallPrompt: null,
 };
 
+let atlasController = null;
+let atlasLoadingPromise = null;
+
 /* ==========================================================================
    DOM References
    ========================================================================== */
@@ -153,6 +156,7 @@ const dom = {
   // Views
   views: {
     discover: document.getElementById('view-discover'),
+    atlas: document.getElementById('view-atlas'),
     genres: document.getElementById('view-genres'),
     countries: document.getElementById('view-countries'),
     languages: document.getElementById('view-languages'),
@@ -414,6 +418,7 @@ function applyTheme(theme) {
     themeMeta.setAttribute('content', isDark ? '#141619' : '#F5F2EC');
   }
   storage.setPref('theme', theme);
+  atlasController?.setTheme(theme);
 }
 
 function applyAccent(accentId) {
@@ -425,6 +430,7 @@ function applyAccent(accentId) {
   }
   storage.setPref('accent', match.id);
   renderAccentSwatches(match.id);
+  atlasController?.setAccent();
   return match;
 }
 
@@ -539,6 +545,51 @@ function getStationShareUrl(station) {
    Navigation & View Switching
    ========================================================================== */
 
+async function ensureAtlasMounted() {
+  if (atlasController) return atlasController;
+  if (atlasLoadingPromise) return atlasLoadingPromise;
+
+  atlasLoadingPromise = import('./map.js')
+    .then(({ createAtlasController }) =>
+      createAtlasController({
+        radioApi,
+        playStation: (station, sourceList) => playStationFromList(station, sourceList),
+        toggleFavorite: (station) => {
+          const { added } = storage.toggleFavorite(station);
+          syncFavoriteIcons(station.stationuuid, added);
+          if (state.view === 'favorites') renderFavoritesView();
+          showToast(added ? `Saved "${station.name}"` : `Removed "${station.name}"`);
+        },
+        openInfo: (station) => openStationModal(station),
+        isFavorite: (uuid) => storage.isFavorite(uuid),
+        getPlayerState: () => radioPlayer.getState(),
+        getCountries: () => state.countries,
+        getHttpsOnly: () => state.filters.httpsOnly,
+        getTheme: () => document.documentElement.getAttribute('data-theme') || 'light',
+        showToast,
+        openCountryInDiscover: (code) => {
+          state.filters.countrycode = code;
+          state.activePreset = null;
+          switchView('discover', { pushHistory: false });
+          syncControlsFromState();
+          fetchStations({ append: false, pushHistory: true });
+        },
+        buildArtworkHtml,
+      })
+    )
+    .then((ctrl) => {
+      atlasController = ctrl;
+      return ctrl;
+    })
+    .catch((err) => {
+      atlasLoadingPromise = null;
+      showToast(err?.message || 'Could not load World Atlas module.');
+      return null;
+    });
+
+  return atlasLoadingPromise;
+}
+
 function switchView(viewName, { pushHistory = true } = {}) {
   if (!dom.views[viewName]) return;
   state.view = viewName;
@@ -551,7 +602,17 @@ function switchView(viewName, { pushHistory = true } = {}) {
     tab.classList.toggle('active', tab.dataset.view === viewName);
   });
 
-  if (viewName === 'genres') {
+  if (viewName !== 'atlas') {
+    atlasController?.onHide();
+  }
+
+  if (viewName === 'atlas') {
+    ensureAtlasMounted().then((ctrl) => {
+      if (state.view === 'atlas') {
+        ctrl?.onShow();
+      }
+    });
+  } else if (viewName === 'genres') {
     renderGenresDirectory(dom.genresDirSearch.value);
   } else if (viewName === 'countries') {
     renderCountriesDirectory(dom.countriesDirSearch.value);
@@ -1079,6 +1140,7 @@ function findStationByUuid(uuid) {
     state.stations.find((s) => s.stationuuid === uuid) ||
     storage.getFavorites().find((s) => s.stationuuid === uuid) ||
     storage.getRecent().find((s) => s.stationuuid === uuid) ||
+    atlasController?.findStation(uuid) ||
     (radioPlayer.currentStation?.stationuuid === uuid ? radioPlayer.currentStation : null)
   );
 }
@@ -1095,6 +1157,8 @@ function syncFavoriteIcons(uuid, isFav) {
       btn.setAttribute('aria-label', isFav ? 'Remove from saved' : 'Save station');
       btn.setAttribute('title', isFav ? 'Saved' : 'Save station');
     });
+
+  atlasController?.syncFavorite(uuid, isFav);
 
   if (radioPlayer.currentStation?.stationuuid === uuid) {
     dom.deckFavBtn.classList.toggle('active', isFav);
@@ -1128,6 +1192,7 @@ async function loadDirectoriesAndStats() {
     state.directoriesLoaded = true;
     state.directoriesError = false;
 
+    atlasController?.setCountries(countries);
     populateFilterDropdowns();
     renderQuickGenreRail();
     renderActiveFilterChips();
@@ -1473,6 +1538,7 @@ function updateDeckUI(pState) {
   dom.deckMobileFavBtn.classList.toggle('active', isFav);
 
   syncVisibleCardStates(station.stationuuid, status);
+  atlasController?.syncPlayback(pState);
 }
 
 /**
@@ -2016,6 +2082,7 @@ function bindEvents() {
   dom.filterHttpsOnly.addEventListener('change', () => {
     state.filters.httpsOnly = dom.filterHttpsOnly.checked;
     storage.setPref('httpsOnly', state.filters.httpsOnly);
+    atlasController?.setHttpsOnly(state.filters.httpsOnly);
     fetchStations({ append: false });
   });
 

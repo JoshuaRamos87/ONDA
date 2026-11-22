@@ -37,12 +37,24 @@ function cleanText(val) {
     .trim();
 }
 
+function parseGeoCoord(val, limit) {
+  if (val === null || val === undefined || val === '') return null;
+  const num = Number(val);
+  if (!Number.isFinite(num) || Math.abs(num) > limit) return null;
+  return num;
+}
+
 /**
  * Clean community-submitted station fields (many entries contain stray tabs or whitespace).
  */
 function normalizeStation(raw) {
   if (!raw || !raw.stationuuid) return null;
   const name = cleanText(raw.name) || 'Untitled Station';
+  const geoLat = parseGeoCoord(raw.geo_lat, 90);
+  const geoLong = parseGeoCoord(raw.geo_long, 180);
+  const isNullIsland =
+    geoLat !== null && geoLong !== null && Math.abs(geoLat) < 0.001 && Math.abs(geoLong) < 0.001;
+
   return {
     ...raw,
     name,
@@ -60,6 +72,8 @@ function normalizeStation(raw) {
     hls: Number(raw.hls) || 0,
     votes: Number(raw.votes) || 0,
     clickcount: Number(raw.clickcount) || 0,
+    geo_lat: isNullIsland ? null : geoLat,
+    geo_long: isNullIsland ? null : geoLong,
   };
 }
 
@@ -291,10 +305,17 @@ class RadioBrowserClient {
     if (filters.httpsOnly) {
       params.is_https = 'true';
     }
+    if (filters.hasGeoInfo === true) {
+      params.has_geo_info = 'true';
+    } else if (filters.hasGeoInfo === false) {
+      params.has_geo_info = 'false';
+    }
 
     const rawStations = await this.request('/json/stations/search', params, {
       signal,
+      cache: Boolean(filters.cache),
       noCache: isRandom || Boolean(filters.noCache),
+      timeoutMs: filters.timeoutMs || 8500,
     });
     const rawCount = Array.isArray(rawStations) ? rawStations.length : 0;
     let stations = dedupeStations(rawStations);
@@ -302,6 +323,30 @@ class RadioBrowserClient {
       stations = shuffle(stations);
     }
     return { stations, rawCount };
+  }
+
+  /**
+   * Fetch live stations with verified geographic coordinates (cached per query for the session).
+   */
+  async getGeoStations({ httpsOnly = true, limit = 1500, countrycode = '' } = {}, signal) {
+    const params = {
+      hidebroken: 'true',
+      has_geo_info: 'true',
+      order: 'clickcount',
+      reverse: 'true',
+      limit,
+    };
+    if (httpsOnly) params.is_https = 'true';
+    if (countrycode) params.countrycode = countrycode.trim().toUpperCase();
+
+    const rawStations = await this.request('/json/stations/search', params, {
+      signal,
+      cache: true,
+      timeoutMs: 12000,
+    });
+    return dedupeStations(rawStations).filter(
+      (s) => s.geo_lat !== null && s.geo_long !== null
+    );
   }
 
   async getStationsByUuids(uuids) {

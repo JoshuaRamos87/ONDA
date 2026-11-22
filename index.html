@@ -71,6 +71,7 @@
 
       <nav class="main-nav" aria-label="Primary navigation">
         <button type="button" class="nav-tab active" data-view="discover" id="nav-discover">Discover</button>
+        <button type="button" class="nav-tab" data-view="atlas" id="nav-atlas">Atlas</button>
         <button type="button" class="nav-tab" data-view="genres" id="nav-genres">Genres</button>
         <button type="button" class="nav-tab" data-view="countries" id="nav-countries">Countries</button>
         <button type="button" class="nav-tab" data-view="languages" id="nav-languages">Languages</button>
@@ -132,6 +133,7 @@
     <!-- Mobile Navigation Strip -->
     <nav class="mobile-nav-row" aria-label="Mobile navigation">
       <button type="button" class="nav-tab active" data-view="discover">Discover</button>
+      <button type="button" class="nav-tab" data-view="atlas">Atlas</button>
       <button type="button" class="nav-tab" data-view="genres">Genres</button>
       <button type="button" class="nav-tab" data-view="countries">Countries</button>
       <button type="button" class="nav-tab" data-view="languages">Languages</button>
@@ -302,7 +304,70 @@
       </div>
     </section>
 
-    <!-- VIEW 2: GENRES DIRECTORY -->
+    <!-- VIEW 2: WORLD ATLAS & NEAR ME (LAZY-LOADED) -->
+    <section id="view-atlas" style="display:none" aria-label="Interactive world radio atlas">
+      <div class="atlas-toolbar">
+        <div class="atlas-heading-group">
+          <div class="atlas-title-row">
+            <h2 class="results-heading">World Radio Atlas</h2>
+            <span class="results-count" id="atlas-summary">Ready</span>
+          </div>
+          <div class="atlas-time-strip" role="group" aria-label="Filter by approximate local time of day">
+            <button type="button" class="atlas-time-chip active" data-time-band="all" aria-pressed="true">All Times</button>
+            <button type="button" class="atlas-time-chip" data-time-band="morning" aria-pressed="false">🌅 Morning</button>
+            <button type="button" class="atlas-time-chip" data-time-band="afternoon" aria-pressed="false">☀️ Afternoon</button>
+            <button type="button" class="atlas-time-chip" data-time-band="evening" aria-pressed="false">🌇 Evening</button>
+            <button type="button" class="atlas-time-chip" data-time-band="night" aria-pressed="false">🌙 Late Night</button>
+          </div>
+        </div>
+
+        <div class="atlas-actions">
+          <button type="button" id="atlas-near-me-btn" class="btn-primary btn-primary-sm" title="Find radio stations near your current location">
+            <svg id="atlas-near-me-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+            </svg>
+            <span id="atlas-near-me-spinner" class="spinner" style="display:none;width:14px;height:14px" aria-hidden="true"></span>
+            <span>Near Me</span>
+          </button>
+          <button type="button" id="atlas-in-view-btn" class="btn-ghost-sm" title="List pinned stations inside the current map area">In View</button>
+          <button type="button" id="atlas-locate-active-btn" class="btn-ghost-sm" disabled title="Fly to the currently playing station">Locate On-Air</button>
+          <button type="button" id="atlas-daynight-btn" class="btn-ghost-sm atlas-toggle active" aria-pressed="true" title="Toggle live solar day/night overlay">Day / Night</button>
+          <button type="button" id="atlas-hubs-btn" class="btn-ghost-sm atlas-toggle active" aria-pressed="true" title="Toggle country fallback hubs when zoomed out">Country Hubs</button>
+        </div>
+      </div>
+
+      <div class="atlas-workspace">
+        <div class="atlas-map-shell">
+          <div id="atlas-map" class="atlas-map-canvas" aria-label="Interactive world radio station map"></div>
+          <div id="atlas-loading" class="atlas-loading-overlay" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="atlas-loading-text">Loading interactive map…</span>
+          </div>
+          <div class="atlas-legend" aria-hidden="true">
+            <span class="atlas-legend-item"><span class="atlas-dot exact"></span> Pinned stations</span>
+            <span class="atlas-legend-item"><span class="atlas-dot hub"></span> Country hub (all stations)</span>
+            <span class="atlas-legend-item"><span class="atlas-dot night"></span> Solar night</span>
+          </div>
+        </div>
+
+        <aside class="atlas-drawer" aria-label="Selected map region stations">
+          <div class="atlas-drawer-header">
+            <div class="atlas-drawer-kicker" id="atlas-drawer-kicker">Global Atlas</div>
+            <h3 class="atlas-drawer-title" id="atlas-drawer-title">Explore Stations Worldwide</h3>
+            <p class="atlas-drawer-subtitle" id="atlas-drawer-subtitle">
+              Tap any accent pin for exact city stations, any dashed ring for a full country, or hit Near Me.
+            </p>
+            <div class="atlas-drawer-controls" id="atlas-drawer-controls"></div>
+          </div>
+
+          <div class="atlas-drawer-banner" id="atlas-drawer-banner" style="display:none"></div>
+
+          <div class="atlas-drawer-list" id="atlas-drawer-list" aria-live="polite"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- VIEW 3: GENRES DIRECTORY -->
     <section id="view-genres" style="display:none" aria-label="Browse by genre">
       <div class="directory-toolbar">
         <div>
