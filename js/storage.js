@@ -120,6 +120,7 @@ export const storage = {
       volume: 0.82,
       muted: false,
       theme: systemDark ? 'dark' : 'light',
+      accent: 'vermilion',
       httpsOnly: isHttpsPage,
     };
 

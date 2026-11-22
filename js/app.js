@@ -4,7 +4,7 @@
  * station details modal, favorites sync, browser history, and keyboard navigation.
  */
 
-import { APP_CONFIG } from './config.js';
+import { APP_CONFIG, ACCENT_THEMES } from './config.js';
 import { radioApi } from './api.js';
 import { radioPlayer } from './player.js';
 import { storage } from './storage.js';
@@ -131,6 +131,10 @@ const dom = {
   surpriseSpinner: document.getElementById('surprise-spinner'),
   installAppBtn: document.getElementById('install-app-btn'),
   aboutBtn: document.getElementById('about-btn'),
+  accentPickerWrap: document.getElementById('accent-picker-wrap'),
+  accentPickerBtn: document.getElementById('accent-picker-btn'),
+  accentPopover: document.getElementById('accent-popover'),
+  accentSwatchList: document.getElementById('accent-swatch-list'),
   footerAboutBtn: document.getElementById('footer-about-btn'),
   footerVersion: document.getElementById('footer-version'),
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
@@ -392,6 +396,40 @@ function applyTheme(theme) {
     themeMeta.setAttribute('content', isDark ? '#141619' : '#F5F2EC');
   }
   storage.setPref('theme', theme);
+}
+
+function applyAccent(accentId) {
+  const match = ACCENT_THEMES.find((t) => t.id === accentId) || ACCENT_THEMES[0];
+  if (match.id === 'vermilion') {
+    document.documentElement.removeAttribute('data-accent');
+  } else {
+    document.documentElement.setAttribute('data-accent', match.id);
+  }
+  storage.setPref('accent', match.id);
+  renderAccentSwatches(match.id);
+  return match;
+}
+
+function renderAccentSwatches(activeId) {
+  dom.accentSwatchList.innerHTML = ACCENT_THEMES.map(
+    (t) => `
+      <button
+        type="button"
+        class="accent-option ${t.id === activeId ? 'active' : ''}"
+        role="menuitemradio"
+        aria-checked="${t.id === activeId ? 'true' : 'false'}"
+        data-accent-pick="${escapeHtml(t.id)}"
+      >
+        <span class="accent-option-dot" style="background:${escapeHtml(t.swatch)}" aria-hidden="true"></span>
+        <span class="accent-option-name">${escapeHtml(t.name.split(' ')[0])}</span>
+      </button>
+    `
+  ).join('');
+}
+
+function closeAccentPopover() {
+  dom.accentPopover.classList.remove('open');
+  dom.accentPickerBtn.setAttribute('aria-expanded', 'false');
 }
 
 /* ==========================================================================
@@ -1738,10 +1776,30 @@ function bindEvents() {
 
   dom.seeAllGenresBtn.addEventListener('click', () => switchView('genres', { pushHistory: true }));
 
-  // Theme toggle
+  // Theme & Accent Color controls
   dom.themeToggleBtn.addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
     applyTheme(next);
+  });
+
+  dom.accentPickerBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = dom.accentPopover.classList.toggle('open');
+    dom.accentPickerBtn.setAttribute('aria-expanded', String(isOpen));
+  });
+
+  dom.accentSwatchList.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-accent-pick]');
+    if (!btn) return;
+    const chosen = applyAccent(btn.dataset.accentPick);
+    closeAccentPopover();
+    showToast(`Accent set to ${chosen.name}`);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!dom.accentPickerWrap.contains(e.target)) {
+      closeAccentPopover();
+    }
   });
 
   // Surprise Me
@@ -2212,6 +2270,10 @@ function bindEvents() {
         hideSearchSuggestions();
         return;
       }
+      if (dom.accentPopover.classList.contains('open')) {
+        closeAccentPopover();
+        return;
+      }
     }
 
     // Keep Tab focus trapped inside any active modal and disable background shortcuts
@@ -2421,6 +2483,7 @@ async function init() {
   populateAppConfigMetadata();
   initPwa();
   applyTheme(prefs.theme);
+  applyAccent(prefs.accent);
   radioPlayer.setVolume(prefs.volume, prefs.muted);
   radioPlayer.attachVuCanvas(dom.vuCanvas);
   radioPlayer.onChange(updateDeckUI);

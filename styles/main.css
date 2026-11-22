@@ -30,11 +30,14 @@
   --border-subtle: hsl(36, 14%, 86%);
   --border-strong: hsl(35, 13%, 76%);
 
-  /* Accents — Signal Vermilion & Studio Brass */
+  /* Accents — Default Signal Vermilion & Studio Brass */
   --accent: hsl(11, 78%, 50%);
   --accent-hover: hsl(11, 82%, 44%);
+  --accent-bright: hsl(12, 86%, 62%);
   --accent-soft: hsla(11, 78%, 50%, 0.11);
   --accent-ring: hsla(11, 78%, 50%, 0.28);
+  --accent-overlay: hsla(11, 78%, 50%, 0.84);
+  --accent-shadow: hsla(11, 78%, 50%, 0.34);
   --amber: hsl(36, 80%, 45%);
   --amber-soft: hsla(36, 80%, 45%, 0.14);
   --green: hsl(152, 56%, 36%);
@@ -86,8 +89,11 @@
 
   --accent: hsl(12, 84%, 56%);
   --accent-hover: hsl(12, 86%, 62%);
+  --accent-bright: hsl(12, 88%, 64%);
   --accent-soft: hsla(12, 84%, 56%, 0.16);
   --accent-ring: hsla(12, 84%, 56%, 0.34);
+  --accent-overlay: hsla(12, 84%, 52%, 0.84);
+  --accent-shadow: hsla(12, 84%, 56%, 0.42);
   --amber: hsl(38, 86%, 56%);
   --amber-soft: hsla(38, 86%, 56%, 0.16);
   --green: hsl(152, 58%, 48%);
@@ -97,6 +103,102 @@
   --shadow-sm: 0 3px 12px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 14px 36px rgba(0, 0, 0, 0.48);
   --shadow-deck: 0 -12px 36px rgba(0, 0, 0, 0.55);
+}
+
+/* Curated Accent Palettes (Light & Dark Calibrated) */
+[data-accent="cobalt"] {
+  --accent: hsl(214, 78%, 48%);
+  --accent-hover: hsl(214, 82%, 42%);
+  --accent-bright: hsl(212, 92%, 65%);
+  --accent-soft: hsla(214, 78%, 48%, 0.11);
+  --accent-ring: hsla(214, 78%, 48%, 0.28);
+  --accent-overlay: hsla(214, 78%, 48%, 0.84);
+  --accent-shadow: hsla(214, 78%, 48%, 0.34);
+}
+[data-theme="dark"][data-accent="cobalt"] {
+  --accent: hsl(212, 86%, 58%);
+  --accent-hover: hsl(212, 90%, 64%);
+  --accent-bright: hsl(212, 94%, 68%);
+  --accent-soft: hsla(212, 86%, 58%, 0.17);
+  --accent-ring: hsla(212, 86%, 58%, 0.35);
+  --accent-overlay: hsla(212, 84%, 52%, 0.84);
+  --accent-shadow: hsla(212, 86%, 58%, 0.42);
+}
+
+[data-accent="emerald"] {
+  --accent: hsl(154, 66%, 36%);
+  --accent-hover: hsl(154, 70%, 30%);
+  --accent-bright: hsl(152, 68%, 54%);
+  --accent-soft: hsla(154, 66%, 36%, 0.11);
+  --accent-ring: hsla(154, 66%, 36%, 0.28);
+  --accent-overlay: hsla(154, 66%, 36%, 0.84);
+  --accent-shadow: hsla(154, 66%, 36%, 0.34);
+}
+[data-theme="dark"][data-accent="emerald"] {
+  --accent: hsl(154, 62%, 46%);
+  --accent-hover: hsl(154, 66%, 52%);
+  --accent-bright: hsl(152, 72%, 58%);
+  --accent-soft: hsla(154, 62%, 46%, 0.17);
+  --accent-ring: hsla(154, 62%, 46%, 0.35);
+  --accent-overlay: hsla(154, 62%, 42%, 0.84);
+  --accent-shadow: hsla(154, 62%, 46%, 0.42);
+}
+
+[data-accent="amber"] {
+  --accent: hsl(34, 84%, 44%);
+  --accent-hover: hsl(34, 88%, 38%);
+  --accent-bright: hsl(38, 92%, 58%);
+  --accent-soft: hsla(34, 84%, 44%, 0.12);
+  --accent-ring: hsla(34, 84%, 44%, 0.28);
+  --accent-overlay: hsla(34, 84%, 44%, 0.86);
+  --accent-shadow: hsla(34, 84%, 44%, 0.34);
+}
+[data-theme="dark"][data-accent="amber"] {
+  --accent: hsl(38, 88%, 52%);
+  --accent-hover: hsl(38, 92%, 58%);
+  --accent-bright: hsl(38, 95%, 62%);
+  --accent-soft: hsla(38, 88%, 52%, 0.17);
+  --accent-ring: hsla(38, 88%, 52%, 0.35);
+  --accent-overlay: hsla(38, 86%, 48%, 0.86);
+  --accent-shadow: hsla(38, 88%, 52%, 0.42);
+}
+
+[data-accent="teal"] {
+  --accent: hsl(184, 72%, 34%);
+  --accent-hover: hsl(184, 76%, 28%);
+  --accent-bright: hsl(184, 72%, 54%);
+  --accent-soft: hsla(184, 72%, 34%, 0.11);
+  --accent-ring: hsla(184, 72%, 34%, 0.28);
+  --accent-overlay: hsla(184, 72%, 34%, 0.84);
+  --accent-shadow: hsla(184, 72%, 34%, 0.34);
+}
+[data-theme="dark"][data-accent="teal"] {
+  --accent: hsl(184, 68%, 46%);
+  --accent-hover: hsl(184, 72%, 52%);
+  --accent-bright: hsl(184, 76%, 58%);
+  --accent-soft: hsla(184, 68%, 46%, 0.17);
+  --accent-ring: hsla(184, 68%, 46%, 0.35);
+  --accent-overlay: hsla(184, 68%, 42%, 0.84);
+  --accent-shadow: hsla(184, 68%, 46%, 0.42);
+}
+
+[data-accent="crimson"] {
+  --accent: hsl(346, 72%, 47%);
+  --accent-hover: hsl(346, 76%, 41%);
+  --accent-bright: hsl(346, 86%, 64%);
+  --accent-soft: hsla(346, 72%, 47%, 0.11);
+  --accent-ring: hsla(346, 72%, 47%, 0.28);
+  --accent-overlay: hsla(346, 72%, 47%, 0.84);
+  --accent-shadow: hsla(346, 72%, 47%, 0.34);
+}
+[data-theme="dark"][data-accent="crimson"] {
+  --accent: hsl(346, 80%, 58%);
+  --accent-hover: hsl(346, 84%, 64%);
+  --accent-bright: hsl(346, 88%, 68%);
+  --accent-soft: hsla(346, 80%, 58%, 0.17);
+  --accent-ring: hsla(346, 80%, 58%, 0.35);
+  --accent-overlay: hsla(346, 78%, 52%, 0.84);
+  --accent-shadow: hsla(346, 80%, 58%, 0.42);
 }
 
 /* Base Reset */
@@ -389,7 +491,7 @@ img {
   font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: -0.01em;
-  box-shadow: 0 2px 8px hsla(11, 78%, 50%, 0.28);
+  box-shadow: 0 2px 8px var(--accent-shadow);
   transition: transform 0.15s var(--ease-out), background-color 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
 }
@@ -397,7 +499,7 @@ img {
 .btn-tune:hover {
   background: var(--accent-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px hsla(11, 78%, 50%, 0.34);
+  box-shadow: 0 4px 12px var(--accent-shadow);
 }
 
 .btn-tune:active {
@@ -1000,7 +1102,7 @@ img {
 }
 
 .station-card.is-playing .station-play-overlay {
-  background: rgba(227, 62, 27, 0.84);
+  background: var(--accent-overlay);
 }
 
 /* Equalizer Bars */
@@ -1491,12 +1593,12 @@ img {
 }
 
 .on-air-indicator.live {
-  color: #ff6b4a;
+  color: var(--accent-bright);
 }
 
 .on-air-indicator.live .on-air-dot {
-  background: #ff4f28;
-  box-shadow: 0 0 0 3px rgba(255, 79, 40, 0.28);
+  background: var(--accent-bright);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .on-air-indicator.buffering {
@@ -1591,7 +1693,7 @@ img {
 }
 
 .deck-btn.active {
-  color: #ff6b4a;
+  color: var(--accent-bright);
 }
 
 .deck-btn.active svg {
@@ -1608,7 +1710,7 @@ img {
   display: grid;
   place-items: center;
   padding: 0;
-  box-shadow: 0 4px 14px rgba(227, 62, 27, 0.42);
+  box-shadow: 0 4px 14px var(--accent-shadow);
   transition: transform 0.14s var(--ease-out), background-color 0.15s ease;
 }
 
@@ -2425,4 +2527,103 @@ body.modal-open {
   font-size: 0.82rem;
   line-height: 1.48;
   color: var(--ink-secondary);
+}
+
+/* ==========================================================================
+   Accent Color Swatch Picker Popover
+   ========================================================================== */
+
+.accent-picker-wrap {
+  position: relative;
+}
+
+.accent-trigger-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.32);
+  transition: transform 0.15s var(--ease-out), background-color 0.2s ease;
+}
+
+.icon-btn:hover .accent-trigger-dot {
+  transform: scale(1.1);
+}
+
+.accent-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 65;
+  width: 210px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  animation: modal-in 0.16s var(--ease-out);
+}
+
+.accent-popover.open {
+  display: flex;
+}
+
+.accent-popover-title {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-tertiary);
+  padding: 0 4px;
+}
+
+.accent-swatch-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.accent-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+  color: var(--ink-primary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-align: left;
+  min-width: 0;
+  transition: border-color 0.14s ease, background-color 0.14s ease, transform 0.12s ease;
+}
+
+.accent-option:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-hover);
+}
+
+.accent-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.accent-option-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+}
+
+.accent-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

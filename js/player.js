@@ -787,6 +787,19 @@ export class RadioPlayer {
     if (!ctx) return;
 
     let frame = 0;
+    let peakColor = '#ff5733';
+    const refreshPeakColor = () => {
+      try {
+        const val = getComputedStyle(document.documentElement)
+          .getPropertyValue('--accent-bright')
+          .trim();
+        if (val) peakColor = val;
+      } catch {
+        // Keep fallback
+      }
+    };
+    refreshPeakColor();
+
     const render = () => {
       if (typeof document !== 'undefined' && document.hidden) {
         this.vuRaf = null;
@@ -794,6 +807,7 @@ export class RadioPlayer {
       }
 
       frame++;
+      if (frame % 30 === 0) refreshPeakColor();
       const width = canvas.width;
       const height = canvas.height;
       ctx.clearRect(0, 0, width, height);
@@ -830,7 +844,7 @@ export class RadioPlayer {
         const y = height - barH;
 
         if (isPlaying) {
-          ctx.fillStyle = this.vuBars[i] > 0.78 ? '#ff5733' : '#e5dfd3';
+          ctx.fillStyle = this.vuBars[i] > 0.78 ? peakColor : '#e5dfd3';
         } else if (isLoading) {
           ctx.fillStyle = '#f6b73c';
         } else {
