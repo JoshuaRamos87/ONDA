@@ -371,6 +371,8 @@ export async function createAtlasController(deps) {
     mapContainer: document.getElementById('atlas-map'),
     loadingOverlay: document.getElementById('atlas-loading'),
     loadingText: document.getElementById('atlas-loading-text'),
+    hydratePill: document.getElementById('atlas-hydrate-pill'),
+    hydrateText: document.getElementById('atlas-hydrate-text'),
     summaryBadge: document.getElementById('atlas-summary'),
     nearMeBtn: document.getElementById('atlas-near-me-btn'),
     nearMeIcon: document.getElementById('atlas-near-me-icon'),
@@ -403,6 +405,8 @@ export async function createAtlasController(deps) {
     geoStations: [],
     countries: Array.isArray(getCountries()) ? getCountries() : [],
     countryStationsCache: new Map(), // countrycode -> station[]
+    hydratedCountries: new Set(), // country codes whose local GPS pins have been loaded
+    hydratingCountries: new Set(), // country codes currently being fetched
     drawerStations: [], // flat array for lookup & queue
     drawerMode: 'intro', // intro | cluster | country | nearme | inview
     drawerContext: null,
@@ -423,6 +427,7 @@ export async function createAtlasController(deps) {
     activeLayer: null,
     userLayer: null,
     terminatorTimer: null,
+    hydrateTimer: null,
     abortController: null,
     drawerAbortController: null,
   };
@@ -434,6 +439,19 @@ export async function createAtlasController(deps) {
 
   function hideLoading() {
     if (dom.loadingOverlay) dom.loadingOverlay.classList.remove('visible');
+  }
+
+  function updateHydratePill() {
+    if (!dom.hydratePill || !dom.hydrateText) return;
+    if (state.hydratingCountries.size === 0) {
+      dom.hydratePill.classList.remove('visible');
+      return;
+    }
+    const labels = Array.from(state.hydratingCountries)
+      .slice(0, 2)
+      .map((code) => getCountryMeta(code)?.name || code);
+    dom.hydrateText.textContent = `Loading ${labels.join(' & ')}…`;
+    dom.hydratePill.classList.add('visible');
   }
 
   function getCountryMeta(code) {
@@ -532,6 +550,10 @@ export async function createAtlasController(deps) {
       }, 60);
     });
 
+    state.map.on('moveend', () => {
+      scheduleViewportHydration();
+    });
+
     state.initialized = true;
     renderTerminator();
     renderActiveStationBeacon();
@@ -544,6 +566,7 @@ export async function createAtlasController(deps) {
       renderCountryHubs();
       renderStationPins();
       updateSummaryBadge();
+      scheduleViewportHydration();
       return;
     }
 
@@ -557,7 +580,7 @@ export async function createAtlasController(deps) {
       const stations = await radioApi.getGeoStations(
         {
           httpsOnly: state.httpsOnly,
-          limit: 1500,
+          limit: 2000,
         },
         state.abortController.signal
       );
@@ -565,6 +588,7 @@ export async function createAtlasController(deps) {
       if (forceReload) {
         state.geoStationsMap.clear();
         state.countryStationsCache.clear();
+        state.hydratedCountries.clear();
       }
       mergeGeoStations(stations);
 
@@ -586,7 +610,128 @@ export async function createAtlasController(deps) {
     } finally {
       state.loadingGlobal = false;
       hideLoading();
+      scheduleViewportHydration();
     }
+  }
+
+  function normalizeLongitude(lng) {
+    return ((((lng + 180) % 360) + 360) % 360) - 180;
+  }
+
+  /**
+   * Background-load deeper GPS-pinned stations for a single country (cached once per session).
+   */
+  async function hydrateCountryPins(rawCode) {
+    const code = (rawCode || '').toUpperCase();
+    if (!code || state.hydratedCountries.has(code) || state.hydratingCountries.has(code)) {
+      return;
+    }
+    const meta = getCountryMeta(code);
+    if (meta && !meta.stationcount) {
+      state.hydratedCountries.add(code);
+      return;
+    }
+
+    const requestHttpsOnly = state.httpsOnly;
+    state.hydratingCountries.add(code);
+    updateHydratePill();
+
+    try {
+      const pinned = await radioApi.getGeoStations({
+        httpsOnly: requestHttpsOnly,
+        countrycode: code,
+        limit: 450,
+      });
+
+      // Discard stale response if user toggled HTTPS-only mid-flight
+      if (requestHttpsOnly !== state.httpsOnly) return;
+
+      state.hydratedCountries.add(code);
+      if (pinned.length > 0) {
+        const beforeCount = state.geoStations.length;
+        mergeGeoStations(pinned);
+        if (state.geoStations.length !== beforeCount) {
+          renderStationPins();
+          updateSummaryBadge();
+        }
+      }
+    } catch {
+      // Transient mirror error: leave unhydrated so panning back can retry cleanly
+    } finally {
+      state.hydratingCountries.delete(code);
+      updateHydratePill();
+    }
+  }
+
+  /**
+   * Automatically hydrate local GPS pins for the 1–2 countries closest to the map viewport
+   * whenever the user pans or zooms into a region (zoom >= 4).
+   */
+  function scheduleViewportHydration() {
+    if (!state.visible || !state.initialized || !state.map) return;
+    clearTimeout(state.hydrateTimer);
+
+    if (state.map.getZoom() < 4) return;
+
+    state.hydrateTimer = setTimeout(() => {
+      if (!state.visible || !state.map || state.map.getZoom() < 4) return;
+      if (state.hydratingCountries.size >= 2) return;
+
+      const center = state.map.getCenter();
+      const normLng = normalizeLongitude(center.lng);
+      const bounds = state.map.getBounds();
+
+      const candidates = [];
+      const seen = new Set();
+
+      // 1. Prioritize the country directly beneath/closest to the map center
+      const centerCode = inferNearestCountryCode(center.lat, normLng);
+      if (
+        centerCode &&
+        !state.hydratedCountries.has(centerCode) &&
+        !state.hydratingCountries.has(centerCode)
+      ) {
+        const centroid = COUNTRY_CENTROIDS[centerCode];
+        const dist = centroid
+          ? haversineKm(center.lat, normLng, centroid[0], centroid[1])
+          : 0;
+        if (dist <= 2200) {
+          candidates.push({ code: centerCode, dist: -1 });
+          seen.add(centerCode);
+        }
+      }
+
+      // 2. Include visible country centroids inside the current map bounds
+      for (const [code, centroid] of Object.entries(COUNTRY_CENTROIDS)) {
+        if (
+          seen.has(code) ||
+          state.hydratedCountries.has(code) ||
+          state.hydratingCountries.has(code)
+        ) {
+          continue;
+        }
+        const meta = getCountryMeta(code);
+        if (state.countries.length > 0 && (!meta || !meta.stationcount)) continue;
+
+        const dist = haversineKm(center.lat, normLng, centroid[0], centroid[1]);
+        const inView =
+          bounds.contains(centroid) ||
+          bounds.contains([centroid[0], centroid[1] + 360]) ||
+          bounds.contains([centroid[0], centroid[1] - 360]);
+
+        if (inView || dist <= 1200) {
+          candidates.push({ code, dist });
+          seen.add(code);
+        }
+      }
+
+      candidates.sort((a, b) => a.dist - b.dist);
+      const slots = Math.max(0, 2 - state.hydratingCountries.size);
+      const picks = candidates.slice(0, slots);
+      for (const pick of picks) {
+        hydrateCountryPins(pick.code);
+      }
+    }, 340);
   }
 
   function renderTerminator() {
@@ -1063,6 +1208,7 @@ export async function createAtlasController(deps) {
         ]);
 
         if (pinnedInCountry.length > 0) {
+          state.hydratedCountries.add(code);
           mergeGeoStations(pinnedInCountry);
           renderStationPins();
           updateSummaryBadge();
@@ -1297,6 +1443,7 @@ export async function createAtlasController(deps) {
         ]);
 
         if (deepPinned.length > 0) {
+          state.hydratedCountries.add(state.nearMeCountryCode);
           mergeGeoStations(deepPinned);
           renderStationPins();
           updateSummaryBadge();
@@ -1535,6 +1682,7 @@ export async function createAtlasController(deps) {
 
     onHide() {
       state.visible = false;
+      clearTimeout(state.hydrateTimer);
       stopTerminatorClock();
     },
 
@@ -1561,6 +1709,7 @@ export async function createAtlasController(deps) {
       updateSummaryBadge();
       if (state.initialized) {
         renderCountryHubs();
+        scheduleViewportHydration();
       }
     },
 
@@ -1568,6 +1717,7 @@ export async function createAtlasController(deps) {
       const next = Boolean(httpsOnly);
       if (state.httpsOnly === next) return;
       state.httpsOnly = next;
+      state.hydratedCountries.clear();
       if (state.initialized && state.visible) {
         loadGlobalGeoStations({ forceReload: true });
       } else {
