@@ -512,9 +512,8 @@ export async function createAtlasController(deps) {
       maxBoundsViscosity: 0.7,
     });
 
-    state.tileLayer = L.tileLayer(TILE_URLS[state.theme], {
+    state.tileLayer = L.tileLayer(OSM_TILE_URL, {
       attribution: TILE_ATTRIBUTION,
-      subdomains: 'abcd',
       maxZoom: 19,
     }).addTo(state.map);
 
