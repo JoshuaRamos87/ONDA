@@ -362,7 +362,11 @@ export class RadioPlayer {
     this.emitTick();
 
     this.updateMediaSessionMetadata(station);
-    radioApi.registerClick(station.stationuuid);
+    const isCustom =
+      Boolean(station.isCustom) || String(station.stationuuid || '').startsWith('custom-');
+    if (!isCustom) {
+      radioApi.registerClick(station.stationuuid);
+    }
 
     const { playable, blockedHttpOnly } = this.buildCandidateUrls(station);
 

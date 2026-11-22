@@ -346,6 +346,7 @@
           <span class="results-count" id="favorites-dir-count">0 saved</span>
         </div>
         <div class="favorites-actions">
+          <button type="button" id="add-custom-station-btn" class="btn-primary btn-primary-sm" title="Add a custom direct, M3U, PLS, or HLS radio stream">+ Add Custom Stream</button>
           <button type="button" id="refresh-favorites-btn" class="btn-ghost-sm" title="Refresh stream URLs from Radio Browser by station UUID">Refresh links</button>
           <button type="button" id="export-favorites-btn" class="btn-ghost-sm">Export JSON</button>
           <label class="btn-ghost-sm" for="import-favorites-input" style="cursor:pointer">
@@ -603,6 +604,102 @@
           Radio Browser API ↗
         </a>
       </div>
+    </div>
+  </div>
+
+  <!-- Add / Edit Custom Stream Modal -->
+  <div class="modal-backdrop" id="custom-station-modal" role="dialog" aria-modal="true" aria-labelledby="custom-modal-title">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <h2 class="modal-title" id="custom-modal-title">Add Custom Stream</h2>
+          <p class="modal-subtitle">Paste a direct audio URL, HLS (.m3u8), M3U, or PLS playlist link (or raw playlist text).</p>
+        </div>
+        <button type="button" id="custom-close-btn" class="icon-btn" aria-label="Close custom stream dialog">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <form id="custom-station-form" class="custom-form" novalidate>
+        <div class="form-field">
+          <div class="form-label-row">
+            <label for="custom-url-input">Stream URL or Playlist *</label>
+            <button type="button" id="custom-parse-btn" class="text-link-btn" style="font-size:0.75rem">Resolve .m3u / .pls</button>
+          </div>
+          <textarea
+            id="custom-url-input"
+            class="form-control form-textarea"
+            rows="2"
+            placeholder="https://ice2.somafm.com/groovesalad-128-mp3  or  https://.../listen.pls"
+            required
+          ></textarea>
+          <p class="form-hint" id="custom-url-hint">Supports MP3, AAC, OGG, FLAC, HLS (.m3u8), .m3u, and .pls streams.</p>
+        </div>
+
+        <div class="form-field">
+          <label for="custom-name-input">Station Name *</label>
+          <input
+            type="text"
+            id="custom-name-input"
+            class="form-control"
+            placeholder="e.g. SomaFM Groove Salad, WKCR 89.9 FM"
+            maxlength="120"
+            required
+          >
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="custom-tags-input">Genre Tags</label>
+            <input
+              type="text"
+              id="custom-tags-input"
+              class="form-control"
+              placeholder="ambient, college, indie"
+              maxlength="160"
+            >
+          </div>
+          <div class="form-field">
+            <label for="custom-country-input">Country / Location</label>
+            <input
+              type="text"
+              id="custom-country-input"
+              class="form-control"
+              placeholder="e.g. United States"
+              maxlength="80"
+            >
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="custom-homepage-input">Website (optional)</label>
+            <input
+              type="url"
+              id="custom-homepage-input"
+              class="form-control"
+              placeholder="https://station-site.org"
+            >
+          </div>
+          <div class="form-field">
+            <label for="custom-favicon-input">Logo URL (optional)</label>
+            <input
+              type="url"
+              id="custom-favicon-input"
+              class="form-control"
+              placeholder="https://.../logo.png"
+            >
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="submit" id="custom-save-play-btn" class="btn-primary">▶ Save &amp; Play</button>
+          <button type="button" id="custom-save-btn" class="btn-ghost-sm">Save Only</button>
+          <button type="button" id="custom-cancel-btn" class="btn-ghost-sm">Cancel</button>
+        </div>
+      </form>
     </div>
   </div>
 

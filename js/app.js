@@ -7,7 +7,7 @@
 import { APP_CONFIG, ACCENT_THEMES } from './config.js';
 import { radioApi } from './api.js';
 import { radioPlayer } from './player.js';
-import { storage } from './storage.js';
+import { storage, createCustomUuid, isCustomStation } from './storage.js';
 
 const PAGE_SIZE = 36;
 
@@ -105,6 +105,7 @@ const state = {
   // Active playback queue, modal & PWA tracking
   queue: [],
   modalStation: null,
+  editingCustomUuid: null,
   lastFocusedEl: null,
   votedUuids: new Set(),
   surpriseHistory: new Set(),
@@ -190,6 +191,7 @@ const dom = {
   // Favorites
   favoritesDirCount: document.getElementById('favorites-dir-count'),
   favoritesGrid: document.getElementById('favorites-grid'),
+  addCustomStationBtn: document.getElementById('add-custom-station-btn'),
   refreshFavoritesBtn: document.getElementById('refresh-favorites-btn'),
   exportFavoritesBtn: document.getElementById('export-favorites-btn'),
   importFavoritesInput: document.getElementById('import-favorites-input'),
@@ -251,6 +253,22 @@ const dom = {
   aboutInstallBtn: document.getElementById('about-install-btn'),
   aboutApiBtn: document.getElementById('about-api-btn'),
   aboutIosTip: document.getElementById('about-ios-tip'),
+
+  customModal: document.getElementById('custom-station-modal'),
+  customModalTitle: document.getElementById('custom-modal-title'),
+  customCloseBtn: document.getElementById('custom-close-btn'),
+  customForm: document.getElementById('custom-station-form'),
+  customUrlInput: document.getElementById('custom-url-input'),
+  customParseBtn: document.getElementById('custom-parse-btn'),
+  customUrlHint: document.getElementById('custom-url-hint'),
+  customNameInput: document.getElementById('custom-name-input'),
+  customTagsInput: document.getElementById('custom-tags-input'),
+  customCountryInput: document.getElementById('custom-country-input'),
+  customHomepageInput: document.getElementById('custom-homepage-input'),
+  customFaviconInput: document.getElementById('custom-favicon-input'),
+  customSavePlayBtn: document.getElementById('custom-save-play-btn'),
+  customSaveBtn: document.getElementById('custom-save-btn'),
+  customCancelBtn: document.getElementById('custom-cancel-btn'),
 
   toastContainer: document.getElementById('toast-container'),
 };
@@ -918,6 +936,7 @@ function renderStationList(container, stations, emptyOpts = {}) {
         <h3>${escapeHtml(emptyOpts.emptyTitle || 'No stations here yet')}</h3>
         <p>${escapeHtml(emptyOpts.emptyDesc || '')}</p>
         ${emptyOpts.showReset ? '<button type="button" class="btn-secondary" data-action="reset-all">Reset filters</button>' : ''}
+        ${emptyOpts.showAddCustom ? '<button type="button" class="btn-primary" data-action="open-add-custom">+ Add Custom Stream</button>' : ''}
       </div>
     `;
     return;
@@ -937,10 +956,12 @@ function buildStationCardHtml(station, playerState, isFav) {
   const isPlaying = isCurrent && playerState.status === 'playing';
   const isLoading = isCurrent && playerState.status === 'loading';
   const playState = isLoading ? 'loading' : isPlaying ? 'playing' : 'idle';
+  const custom = isCustomStation(station);
 
-  const flag = countryCodeToFlag(station.countrycode);
+  const flag = custom && !station.countrycode ? '✦' : countryCodeToFlag(station.countrycode);
   const locationParts = [station.country, station.state].filter(Boolean);
-  const locationText = locationParts.length > 0 ? locationParts.join(' · ') : 'International';
+  const locationText =
+    locationParts.length > 0 ? locationParts.join(' · ') : custom ? 'Custom Stream' : 'International';
   const tags = parseTags(station.tags).slice(0, 3);
 
   const codec = (station.codec || '').toUpperCase();
@@ -1034,14 +1055,19 @@ function buildStationCardHtml(station, playerState, isFav) {
 
       <div class="station-meta-footer">
         <div class="tech-specs">
+          ${custom ? '<span class="spec-badge custom" title="Manually added custom stream">✦ Custom</span>' : ''}
           ${codec ? `<span class="spec-badge">${escapeHtml(codec)}</span>` : ''}
           ${bitrate ? `<span class="spec-badge">${escapeHtml(bitrate)}</span>` : ''}
           ${isHls ? '<span class="spec-badge hls">HLS</span>' : ''}
           ${isHttpOnHttps ? '<span class="spec-badge http-warn" title="HTTP stream may be blocked on HTTPS pages">HTTP</span>' : ''}
         </div>
         <div class="station-stats-inline">
-          <span class="station-stat-item" title="Votes">▲ ${formatNumber(station.votes)}</span>
-          <span class="station-stat-item" title="24h clicks">▶ ${formatNumber(station.clickcount)}</span>
+          ${
+            custom
+              ? `<button type="button" class="text-link-btn" style="font-size:0.72rem;font-family:var(--font-mono)" data-action="edit-custom" data-uuid="${escapeHtml(station.stationuuid)}">✎ Edit</button>`
+              : `<span class="station-stat-item" title="Votes">▲ ${formatNumber(station.votes)}</span>
+                 <span class="station-stat-item" title="24h clicks">▶ ${formatNumber(station.clickcount)}</span>`
+          }
         </div>
       </div>
     </article>
@@ -1278,13 +1304,15 @@ function updateFavoriteBadges() {
 function renderFavoritesView() {
   const favorites = storage.getFavorites();
   const recent = storage.getRecent();
+  const customCount = favorites.filter((s) => isCustomStation(s)).length;
 
-  dom.favoritesDirCount.textContent = `${favorites.length} saved station${favorites.length === 1 ? '' : 's'}`;
+  dom.favoritesDirCount.textContent = `${favorites.length} saved station${favorites.length === 1 ? '' : 's'}${customCount > 0 ? ` · ${customCount} custom` : ''}`;
 
   renderStationList(dom.favoritesGrid, favorites, {
     emptyTitle: 'No saved stations yet',
-    emptyDesc: 'Tap the heart icon on any station card or in the player bar to build your personal dial.',
+    emptyDesc: 'Tap the heart icon on any station, or add your own custom direct / M3U / PLS stream URL.',
     showReset: false,
+    showAddCustom: true,
   });
 
   if (recent.length > 0) {
@@ -1302,17 +1330,25 @@ async function refreshFavoritesFromApi() {
     return;
   }
 
+  const apiStations = current.filter((s) => !isCustomStation(s));
+  if (apiStations.length === 0) {
+    showToast('All saved stations are custom streams.');
+    return;
+  }
+
   dom.refreshFavoritesBtn.disabled = true;
   dom.refreshFavoritesBtn.textContent = 'Refreshing…';
 
   try {
-    const fresh = await radioApi.getStationsByUuids(current.map((s) => s.stationuuid));
+    const fresh = await radioApi.getStationsByUuids(apiStations.map((s) => s.stationuuid));
     if (fresh.length > 0) {
       const freshMap = new Map(fresh.map((s) => [s.stationuuid, s]));
-      const merged = current.map((saved) => freshMap.get(saved.stationuuid) || saved);
+      const merged = current.map((saved) =>
+        isCustomStation(saved) ? saved : freshMap.get(saved.stationuuid) || saved
+      );
       storage.replaceFavorites(merged);
       renderFavoritesView();
-      showToast(`Refreshed ${fresh.length} saved station${fresh.length === 1 ? '' : 's'}.`);
+      showToast(`Refreshed ${fresh.length} Radio Browser station${fresh.length === 1 ? '' : 's'}.`);
     } else {
       showToast('Saved stations are already up to date.');
     }
@@ -1377,13 +1413,17 @@ function updateDeckUI(pState) {
     return;
   }
 
+  const custom = isCustomStation(station);
   dom.deckPlayBtn.disabled = false;
   dom.deckPrevBtn.disabled = state.queue.length < 2;
   dom.deckNextBtn.disabled = state.queue.length < 2;
   dom.deckFavBtn.disabled = false;
   dom.deckMobileFavBtn.disabled = false;
   dom.deckMobileMoreBtn.disabled = false;
-  dom.deckShareBtn.disabled = false;
+  dom.deckShareBtn.disabled = custom;
+  dom.deckShareBtn.title = custom
+    ? 'Custom streams are stored locally — export JSON to share'
+    : 'Copy direct station link';
 
   if (dom.deckArt.dataset.uuid !== station.stationuuid) {
     dom.deckArt.dataset.uuid = station.stationuuid;
@@ -1391,12 +1431,17 @@ function updateDeckUI(pState) {
   }
 
   dom.deckTitle.textContent = station.name || 'Untitled Station';
-  const loc = [countryCodeToFlag(station.countrycode), station.country, parseTags(station.tags)[0]]
+  const loc = [
+    custom && !station.countrycode ? '✦' : countryCodeToFlag(station.countrycode),
+    station.country || (custom ? 'Custom Stream' : ''),
+    parseTags(station.tags)[0],
+  ]
     .filter(Boolean)
     .join(' · ');
   dom.deckSubtitle.textContent = loc || 'Live Radio Stream';
 
   const techParts = [
+    custom ? '✦ CUSTOM' : '',
     (station.codec || '').toUpperCase(),
     Number(station.bitrate) > 0 ? `${station.bitrate} kbps` : '',
     Number(station.hls) === 1 ? 'HLS' : '',
@@ -1572,21 +1617,24 @@ function openStationModal(station) {
     station.geo_long !== undefined &&
     (Number(station.geo_lat) !== 0 || Number(station.geo_long) !== 0);
 
+  const custom = isCustomStation(station);
   const specs = [
     {
       label: 'Format & Bitrate',
       value: `${(station.codec || 'Audio').toUpperCase()}${Number(station.bitrate) > 0 ? ` · ${station.bitrate} kbps` : ''}${Number(station.hls) === 1 ? ' (HLS)' : ''}`,
     },
     {
-      label: 'Community Stats',
-      value: `${formatNumber(station.votes)} votes · ${formatNumber(station.clickcount)} clicks/24h`,
+      label: custom ? 'Source' : 'Community Stats',
+      value: custom
+        ? '✦ Manually Added Custom Stream'
+        : `${formatNumber(station.votes)} votes · ${formatNumber(station.clickcount)} clicks/24h`,
     },
     {
       label: 'Protocol',
       value: streamUrl.startsWith('https://') ? 'HTTPS (Secure)' : 'HTTP (Unencrypted)',
     },
     {
-      label: 'Station UUID',
+      label: custom ? 'Local ID' : 'Station UUID',
       value: station.stationuuid.slice(0, 18) + '…',
     },
   ];
@@ -1625,8 +1673,8 @@ function openStationModal(station) {
     </div>
     <button type="button" class="btn-primary" id="modal-play-btn">${isThisPlaying ? '⏸ Pause' : '▶ Tune In'}</button>
     <button type="button" class="btn-ghost-sm" id="modal-fav-btn">${isFav ? '♥ Saved' : '♡ Save'}</button>
-    <button type="button" class="btn-ghost-sm" id="modal-vote-btn" ${voted ? 'disabled' : ''}>${voted ? '✓ Upvoted' : '▲ Upvote'}</button>
-    <button type="button" class="btn-ghost-sm" id="modal-share-btn">Copy Link</button>
+    ${custom ? '<button type="button" class="btn-ghost-sm" id="modal-edit-custom-btn">✎ Edit Stream</button>' : `<button type="button" class="btn-ghost-sm" id="modal-vote-btn" ${voted ? 'disabled' : ''}>${voted ? '✓ Upvoted' : '▲ Upvote'}</button>`}
+    ${!custom ? '<button type="button" class="btn-ghost-sm" id="modal-share-btn">Copy Link</button>' : ''}
     ${streamUrl ? '<button type="button" class="btn-ghost-sm" id="modal-copy-stream-btn">Copy Stream URL</button>' : ''}
     ${homepageUrl ? `<a class="btn-ghost-sm" href="${escapeHtml(homepageUrl)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
     ${hasGeo ? `<a class="btn-ghost-sm" href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(station.geo_lat)}&mlon=${encodeURIComponent(station.geo_long)}#map=8/${encodeURIComponent(station.geo_lat)}/${encodeURIComponent(station.geo_long)}" target="_blank" rel="noopener noreferrer">Map ↗</a>` : ''}
@@ -1635,9 +1683,17 @@ function openStationModal(station) {
   if (dom.aboutModal.classList.contains('open')) {
     dom.aboutModal.classList.remove('open');
   }
+  if (dom.customModal.classList.contains('open')) {
+    dom.customModal.classList.remove('open');
+  }
   dom.modal.classList.add('open');
   lockPageScroll();
   dom.modalCloseBtn.focus();
+
+  document.getElementById('modal-edit-custom-btn')?.addEventListener('click', () => {
+    closeStationModal();
+    openCustomStationModal(station);
+  });
 
   document.getElementById('modal-sleep-select')?.addEventListener('change', (e) => {
     const mins = Number(e.target.value);
@@ -1996,6 +2052,12 @@ function bindEvents() {
       return;
     }
 
+    const addCustomBtn = e.target.closest('[data-action="open-add-custom"]');
+    if (addCustomBtn) {
+      openCustomStationModal(null);
+      return;
+    }
+
     const actionEl = e.target.closest('[data-action]');
     if (!actionEl) return;
 
@@ -2026,6 +2088,8 @@ function bindEvents() {
       showToast(added ? `Saved "${station.name}"` : `Removed "${station.name}"`);
     } else if (action === 'info') {
       openStationModal(station);
+    } else if (action === 'edit-custom') {
+      openCustomStationModal(station);
     }
   };
 
@@ -2096,7 +2160,8 @@ function bindEvents() {
     fetchStations({ append: false, pushHistory: true });
   });
 
-  // Favorites export / import / refresh / clear recent
+  // Favorites add custom / export / import / refresh / clear recent
+  dom.addCustomStationBtn.addEventListener('click', () => openCustomStationModal(null));
   dom.refreshFavoritesBtn.addEventListener('click', refreshFavoritesFromApi);
 
   dom.exportFavoritesBtn.addEventListener('click', () => {
@@ -2112,7 +2177,10 @@ function bindEvents() {
     a.download = 'onda-radio-favorites.json';
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`Exported ${data.length} saved stations.`);
+    const customCount = data.filter((s) => isCustomStation(s)).length;
+    showToast(
+      `Exported ${data.length} station${data.length === 1 ? '' : 's'}${customCount > 0 ? ` (incl. ${customCount} custom)` : ''}.`
+    );
   });
 
   dom.importFavoritesInput.addEventListener('change', async (e) => {
@@ -2122,19 +2190,54 @@ function bindEvents() {
       const text = await file.text();
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed)) throw new Error('Invalid JSON format');
+
       const existing = storage.getFavorites();
       const mergedMap = new Map(existing.map((s) => [s.stationuuid, s]));
+      const existingCustomUrls = new Set(
+        existing
+          .filter((s) => isCustomStation(s))
+          .map((s) => (s.url_resolved || s.url || '').toLowerCase())
+          .filter(Boolean)
+      );
+
       let addedCount = 0;
-      for (const item of parsed) {
-        if (item && item.stationuuid && !mergedMap.has(item.stationuuid)) {
-          mergedMap.set(item.stationuuid, item);
-          addedCount++;
-        }
+      let addedCustomCount = 0;
+
+      for (const rawItem of parsed) {
+        if (!rawItem || typeof rawItem !== 'object') continue;
+        const cleanUrl = sanitizeHttpUrl(rawItem.url_resolved || rawItem.url);
+        const hasUuid = Boolean(rawItem.stationuuid);
+
+        if (!hasUuid && !cleanUrl) continue;
+
+        const custom =
+          isCustomStation(rawItem) || !hasUuid;
+        const item = {
+          ...rawItem,
+          stationuuid: hasUuid ? String(rawItem.stationuuid) : createCustomUuid(),
+          url: sanitizeHttpUrl(rawItem.url) || cleanUrl,
+          url_resolved: cleanUrl || sanitizeHttpUrl(rawItem.url),
+          isCustom: custom,
+        };
+
+        if (mergedMap.has(item.stationuuid)) continue;
+        const urlKey = (item.url_resolved || item.url || '').toLowerCase();
+        if (custom && urlKey && existingCustomUrls.has(urlKey)) continue;
+
+        mergedMap.set(item.stationuuid, item);
+        if (custom && urlKey) existingCustomUrls.add(urlKey);
+        addedCount++;
+        if (custom) addedCustomCount++;
       }
+
       storage.replaceFavorites(Array.from(mergedMap.values()));
       updateFavoriteBadges();
       renderFavoritesView();
-      showToast(`Imported ${addedCount} new station${addedCount === 1 ? '' : 's'}.`);
+      showToast(
+        addedCount > 0
+          ? `Imported ${addedCount} station${addedCount === 1 ? '' : 's'}${addedCustomCount > 0 ? ` (${addedCustomCount} custom)` : ''}.`
+          : 'All stations in that file are already saved.'
+      );
     } catch {
       showToast('Could not import file — expected a valid ONDA favorites JSON array.');
     } finally {
@@ -2165,7 +2268,7 @@ function bindEvents() {
   dom.deckMobileFavBtn.addEventListener('click', toggleCurrentStationFavorite);
 
   dom.deckShareBtn.addEventListener('click', () => {
-    if (!radioPlayer.currentStation) return;
+    if (!radioPlayer.currentStation || isCustomStation(radioPlayer.currentStation)) return;
     copyToClipboard(getStationShareUrl(radioPlayer.currentStation), 'Direct station link copied!');
   });
 
@@ -2234,6 +2337,28 @@ function bindEvents() {
     }
   });
 
+  // Add / Edit Custom Stream Modal events
+  let customPointerDownTarget = null;
+  dom.customModal.addEventListener('pointerdown', (e) => {
+    customPointerDownTarget = e.target;
+  });
+  dom.customCloseBtn.addEventListener('click', closeCustomStationModal);
+  dom.customCancelBtn.addEventListener('click', closeCustomStationModal);
+  dom.customModal.addEventListener('click', (e) => {
+    if (e.target === dom.customModal && customPointerDownTarget === dom.customModal) {
+      closeCustomStationModal();
+    }
+  });
+  dom.customUrlInput.addEventListener('input', updateCustomUrlHintLive);
+  dom.customParseBtn.addEventListener('click', handleManualPlaylistResolve);
+  dom.customForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitCustomStationForm({ playAfterSave: true });
+  });
+  dom.customSaveBtn.addEventListener('click', () => {
+    submitCustomStationForm({ playAfterSave: false });
+  });
+
   dom.installAppBtn.addEventListener('click', promptInstallPwa);
   dom.aboutInstallBtn.addEventListener('click', promptInstallPwa);
 
@@ -2258,6 +2383,10 @@ function bindEvents() {
         target.isContentEditable);
 
     if (e.key === 'Escape') {
+      if (dom.customModal.classList.contains('open')) {
+        closeCustomStationModal();
+        return;
+      }
       if (dom.aboutModal.classList.contains('open')) {
         closeAboutModal();
         return;
@@ -2317,10 +2446,15 @@ let pageScrollLocked = false;
 let lockedScrollY = 0;
 
 function isAnyModalOpen() {
-  return dom.modal.classList.contains('open') || dom.aboutModal.classList.contains('open');
+  return (
+    dom.modal.classList.contains('open') ||
+    dom.aboutModal.classList.contains('open') ||
+    dom.customModal.classList.contains('open')
+  );
 }
 
 function getActiveModal() {
+  if (dom.customModal.classList.contains('open')) return dom.customModal;
   if (dom.aboutModal.classList.contains('open')) return dom.aboutModal;
   if (dom.modal.classList.contains('open')) return dom.modal;
   return null;
@@ -2353,7 +2487,7 @@ function unlockPageScroll() {
 function trapFocusInModal(modalBackdrop, event) {
   const focusable = Array.from(
     modalBackdrop.querySelectorAll(
-      'a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      'a[href], button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
     )
   ).filter((el) => el.offsetParent !== null);
 
@@ -2411,6 +2545,10 @@ function openAboutModal() {
   if (dom.modal.classList.contains('open')) {
     dom.modal.classList.remove('open');
     state.modalStation = null;
+  }
+  if (dom.customModal.classList.contains('open')) {
+    dom.customModal.classList.remove('open');
+    state.editingCustomUuid = null;
   }
   state.lastFocusedEl = document.activeElement;
   populateAppConfigMetadata();
@@ -2472,6 +2610,378 @@ function initPwa() {
         // Non-fatal if browser blocks service workers (e.g., strict private mode)
       });
     });
+  }
+}
+
+/* ==========================================================================
+   Custom Streams (Direct / HLS / M3U / PLS)
+   ========================================================================== */
+
+function isPlaylistUrl(url) {
+  return /\.(pls|m3u)(\?.*)?$/i.test(url) && !/\.m3u8(\?.*)?$/i.test(url);
+}
+
+function isHlsUrl(url) {
+  return /\.m3u8(\?.*)?$/i.test(url);
+}
+
+function inferCodecFromUrl(url) {
+  const lower = String(url || '').toLowerCase();
+  if (/\.m3u8(\?|$)/.test(lower)) return 'HLS';
+  if (/flac/.test(lower)) return 'FLAC';
+  if (/aacp|aac\+|aac/.test(lower)) return 'AAC';
+  if (/ogg|opus/.test(lower)) return 'OGG';
+  if (/mp3/.test(lower)) return 'MP3';
+  return '';
+}
+
+function inferNameFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, '');
+    const segment = parsed.pathname.split('/').filter(Boolean).pop() || '';
+    const cleanedSeg = segment.replace(/\.(mp3|aac|ogg|flac|m3u8?|pls)$/i, '').replace(/[-_]+/g, ' ').trim();
+    return cleanedSeg ? `${host} · ${cleanedSeg}` : host;
+  } catch {
+    return 'Custom Radio Stream';
+  }
+}
+
+/**
+ * Parse raw .pls or .m3u playlist text and extract stream URL(s) and optional title.
+ * Prefers HTTPS URLs when multiple mirror entries exist.
+ */
+function parsePlaylistText(text) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const entries = [];
+  let pendingM3uTitle = '';
+  const plsFiles = new Map();
+  const plsTitles = new Map();
+
+  for (const line of lines) {
+    // PLS format: File1=https://..., Title1=Station Name
+    const fileMatch = /^File(\d+)\s*=\s*(.+)$/i.exec(line);
+    if (fileMatch) {
+      const clean = sanitizeHttpUrl(fileMatch[2]);
+      if (clean) plsFiles.set(fileMatch[1], clean);
+      continue;
+    }
+
+    const titleMatch = /^Title(\d+)\s*=\s*(.+)$/i.exec(line);
+    if (titleMatch) {
+      plsTitles.set(titleMatch[1], titleMatch[2].trim());
+      continue;
+    }
+
+    // M3U format: #EXTINF:-1,Station Name
+    const extinfMatch = /^#EXTINF:[^,]*,(.+)$/i.exec(line);
+    if (extinfMatch) {
+      pendingM3uTitle = extinfMatch[1].trim();
+      continue;
+    }
+
+    if (line.startsWith('#') || line.startsWith('[')) continue;
+
+    const clean = sanitizeHttpUrl(line);
+    if (clean) {
+      entries.push({ url: clean, title: pendingM3uTitle });
+      pendingM3uTitle = '';
+    }
+  }
+
+  for (const [idx, url] of plsFiles.entries()) {
+    entries.push({ url, title: plsTitles.get(idx) || '' });
+  }
+
+  if (entries.length === 0) return null;
+
+  // Prefer HTTPS entry when running on HTTPS (e.g. GitHub Pages)
+  const preferred =
+    window.location.protocol === 'https:'
+      ? entries.find((e) => e.url.startsWith('https://')) || entries[0]
+      : entries[0];
+
+  return {
+    streamUrl: preferred.url,
+    title: preferred.title || entries.find((e) => e.title)?.title || '',
+    count: entries.length,
+  };
+}
+
+/**
+ * Resolve user input: supports direct URLs, HLS .m3u8 URLs, remote .pls/.m3u URLs,
+ * or raw pasted .pls/.m3u file contents.
+ */
+async function resolveStreamInput(rawText) {
+  const trimmed = String(rawText || '').trim();
+  if (!trimmed) {
+    return { error: 'Please enter a stream URL or paste a .m3u / .pls playlist.' };
+  }
+
+  // Case 1: User pasted raw .pls or .m3u file contents
+  const looksLikeRawPlaylist =
+    trimmed.includes('\n') ||
+    /\[playlist\]/i.test(trimmed) ||
+    /^#EXTM3U/i.test(trimmed) ||
+    /^File\d+\s*=/im.test(trimmed);
+
+  if (looksLikeRawPlaylist) {
+    const parsed = parsePlaylistText(trimmed);
+    if (!parsed) {
+      return { error: 'No valid http:// or https:// stream URL was found in that playlist text.' };
+    }
+    return {
+      url: parsed.streamUrl,
+      urlResolved: parsed.streamUrl,
+      suggestedTitle: parsed.title,
+      formatNote: `Extracted stream from playlist (${parsed.count} entr${parsed.count === 1 ? 'y' : 'ies'}).`,
+      status: 'ok',
+    };
+  }
+
+  // Case 2: Single URL
+  const singleUrl = sanitizeHttpUrl(trimmed);
+  if (!singleUrl) {
+    return { error: 'Enter a valid http:// or https:// stream URL (or paste .m3u / .pls text).' };
+  }
+
+  // Direct .m3u8 (HLS) or direct audio stream
+  if (!isPlaylistUrl(singleUrl)) {
+    return {
+      url: singleUrl,
+      urlResolved: singleUrl,
+      suggestedTitle: '',
+      formatNote: isHlsUrl(singleUrl) ? 'Detected HLS (.m3u8) live stream.' : 'Direct audio stream URL ready.',
+      status: 'ok',
+    };
+  }
+
+  // Case 3: Remote .pls or .m3u playlist URL — attempt best-effort CORS fetch & unpack
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(singleUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const body = await res.text();
+      const parsed = parsePlaylistText(body);
+      if (parsed) {
+        return {
+          url: singleUrl,
+          urlResolved: parsed.streamUrl,
+          suggestedTitle: parsed.title,
+          formatNote: `Resolved playlist → ${parsed.streamUrl}`,
+          status: 'ok',
+        };
+      }
+    }
+  } catch {
+    // CORS or network error fetching playlist directly
+  }
+
+  return {
+    url: singleUrl,
+    urlResolved: singleUrl,
+    suggestedTitle: '',
+    formatNote:
+      'Could not auto-read playlist (CORS blocked). Saved URL directly — if it does not play, open the .pls/.m3u file and paste its contents here.',
+    status: 'warn',
+  };
+}
+
+function setCustomHint(text, tone = '') {
+  dom.customUrlHint.textContent = text;
+  dom.customUrlHint.className = `form-hint${tone ? ` ${tone}` : ''}`;
+}
+
+function updateCustomUrlHintLive() {
+  const val = dom.customUrlInput.value.trim();
+  if (!val) {
+    setCustomHint('Supports MP3, AAC, OGG, FLAC, HLS (.m3u8), .m3u, and .pls streams.');
+    return;
+  }
+
+  if (val.includes('\n') || /\[playlist\]|^#EXTM3U|^File1=/im.test(val)) {
+    const parsed = parsePlaylistText(val);
+    if (parsed) {
+      setCustomHint(`Detected playlist text → ${parsed.streamUrl}`, 'ok');
+    } else {
+      setCustomHint('Playlist text detected, but no http/https stream URL found yet.', 'warn');
+    }
+    return;
+  }
+
+  const clean = sanitizeHttpUrl(val);
+  if (!clean) {
+    setCustomHint('URL must start with https:// or http:// (or paste raw .m3u / .pls text).', 'warn');
+    return;
+  }
+
+  if (window.location.protocol === 'https:' && clean.startsWith('http://')) {
+    setCustomHint(
+      'Heads up: http:// streams are blocked by browsers on HTTPS pages. Use https:// if the station supports it.',
+      'warn'
+    );
+  } else if (isPlaylistUrl(clean)) {
+    setCustomHint('Playlist URL detected (.m3u / .pls) — will auto-resolve on save, or click "Resolve" now.', 'ok');
+  } else if (isHlsUrl(clean)) {
+    setCustomHint('HLS adaptive stream (.m3u8) detected — ready to save.', 'ok');
+  } else {
+    setCustomHint('Direct HTTPS stream URL ready.', 'ok');
+  }
+}
+
+async function handleManualPlaylistResolve() {
+  const raw = dom.customUrlInput.value.trim();
+  if (!raw) {
+    setCustomHint('Paste a .m3u / .pls link or playlist contents first.', 'warn');
+    dom.customUrlInput.focus();
+    return;
+  }
+
+  dom.customParseBtn.disabled = true;
+  dom.customParseBtn.textContent = 'Resolving…';
+  try {
+    const res = await resolveStreamInput(raw);
+    if (res.error) {
+      setCustomHint(res.error, 'error');
+      return;
+    }
+    if (res.urlResolved && res.urlResolved !== raw) {
+      dom.customUrlInput.value = res.urlResolved;
+    }
+    if (res.suggestedTitle && !dom.customNameInput.value.trim()) {
+      dom.customNameInput.value = res.suggestedTitle;
+    }
+    setCustomHint(res.formatNote, res.status);
+  } finally {
+    dom.customParseBtn.disabled = false;
+    dom.customParseBtn.textContent = 'Resolve .m3u / .pls';
+  }
+}
+
+function openCustomStationModal(existingStation = null) {
+  if (dom.modal.classList.contains('open')) {
+    dom.modal.classList.remove('open');
+    state.modalStation = null;
+  }
+  if (dom.aboutModal.classList.contains('open')) {
+    dom.aboutModal.classList.remove('open');
+  }
+
+  state.lastFocusedEl = document.activeElement;
+  const isEdit = Boolean(existingStation && isCustomStation(existingStation));
+  state.editingCustomUuid = isEdit ? existingStation.stationuuid : null;
+
+  dom.customModalTitle.textContent = isEdit ? 'Edit Custom Stream' : 'Add Custom Stream';
+  dom.customSavePlayBtn.textContent = isEdit ? '▶ Save & Play' : '▶ Save & Play';
+  dom.customSaveBtn.textContent = isEdit ? 'Save Changes' : 'Save Only';
+
+  dom.customUrlInput.value = isEdit ? existingStation.url_resolved || existingStation.url || '' : '';
+  dom.customNameInput.value = isEdit ? existingStation.name || '' : '';
+  dom.customTagsInput.value = isEdit ? existingStation.tags || '' : '';
+  dom.customCountryInput.value = isEdit ? existingStation.country || '' : '';
+  dom.customHomepageInput.value = isEdit ? existingStation.homepage || '' : '';
+  dom.customFaviconInput.value = isEdit ? existingStation.favicon || '' : '';
+
+  updateCustomUrlHintLive();
+  dom.customModal.classList.add('open');
+  lockPageScroll();
+  dom.customUrlInput.focus();
+}
+
+function closeCustomStationModal() {
+  dom.customModal.classList.remove('open');
+  state.editingCustomUuid = null;
+  if (!isAnyModalOpen()) {
+    unlockPageScroll();
+  }
+  if (state.lastFocusedEl && typeof state.lastFocusedEl.focus === 'function') {
+    state.lastFocusedEl.focus();
+  }
+  state.lastFocusedEl = null;
+}
+
+async function submitCustomStationForm({ playAfterSave = true } = {}) {
+  dom.customSavePlayBtn.disabled = true;
+  dom.customSaveBtn.disabled = true;
+
+  try {
+    const resolved = await resolveStreamInput(dom.customUrlInput.value);
+    if (resolved.error) {
+      setCustomHint(resolved.error, 'error');
+      dom.customUrlInput.focus();
+      return;
+    }
+
+    const nameRaw =
+      dom.customNameInput.value.trim() ||
+      resolved.suggestedTitle ||
+      inferNameFromUrl(resolved.urlResolved);
+
+    const homepageRaw = dom.customHomepageInput.value.trim();
+    const faviconRaw = dom.customFaviconInput.value.trim();
+    const homepage = homepageRaw ? sanitizeHttpUrl(homepageRaw) : '';
+    const favicon = faviconRaw ? sanitizeHttpUrl(faviconRaw) : '';
+
+    if (homepageRaw && !homepage) {
+      showToast('Website URL must start with https:// or http://');
+      dom.customHomepageInput.focus();
+      return;
+    }
+    if (faviconRaw && !favicon) {
+      showToast('Logo URL must start with https:// or http://');
+      dom.customFaviconInput.focus();
+      return;
+    }
+
+    const isHls = isHlsUrl(resolved.urlResolved) ? 1 : 0;
+    const station = {
+      stationuuid: state.editingCustomUuid || createCustomUuid(),
+      name: nameRaw,
+      url: resolved.url,
+      url_resolved: resolved.urlResolved,
+      homepage,
+      favicon,
+      tags: dom.customTagsInput.value.trim(),
+      country: dom.customCountryInput.value.trim(),
+      countrycode: '',
+      state: '',
+      language: '',
+      codec: inferCodecFromUrl(resolved.urlResolved),
+      bitrate: 0,
+      hls: isHls,
+      votes: 0,
+      clickcount: 0,
+      isCustom: true,
+    };
+
+    const { station: saved, updated } = storage.upsertFavorite(station);
+    updateFavoriteBadges();
+    renderFavoritesView();
+
+    // If editing the currently active station, keep player metadata in sync
+    if (updated && radioPlayer.currentStation?.stationuuid === saved.stationuuid) {
+      radioPlayer.currentStation = saved;
+      radioPlayer.updateMediaSessionMetadata(saved);
+      updateDeckUI(radioPlayer.getState());
+    }
+
+    closeCustomStationModal();
+
+    if (playAfterSave) {
+      playStationFromList(saved, storage.getFavorites(), { forcePlay: true });
+      showToast(updated ? `Updated & tuned to "${saved.name}"` : `Added & tuned to "${saved.name}"`);
+    } else {
+      showToast(updated ? `Updated "${saved.name}"` : `Added "${saved.name}" to Saved`);
+    }
+  } finally {
+    dom.customSavePlayBtn.disabled = false;
+    dom.customSaveBtn.disabled = false;
   }
 }
 
