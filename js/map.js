@@ -7,7 +7,7 @@
  * - Two-tier geographic coverage: Exact GPS-pinned station clusters + Country Hub fallbacks
  * - "Near Me" geolocation with Haversine distance sorting + honest country fallback section
  * - Real-time astronomical Day/Night solar terminator + approximate local solar time bands
- * - Theme-aware Carto Positron (light) / Dark Matter (dark) basemaps + dynamic --accent styling
+ * - Keyless OpenStreetMap tiles graded via CSS for Light/Dark modes + dynamic --accent styling
  */
 
 const LEAFLET_SOURCES = [
@@ -21,13 +21,10 @@ const LEAFLET_SOURCES = [
   },
 ];
 
-const TILE_URLS = {
-  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-};
+const OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 const TILE_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OSM</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>';
 
 const WIDE_MULTI_TZ_COUNTRIES = new Set([
   'US', 'CA', 'RU', 'BR', 'AU', 'MX', 'ID', 'KZ', 'MN', 'CD', 'GL', 'KI', 'PF', 'FM', 'AQ',
@@ -1546,8 +1543,7 @@ export async function createAtlasController(deps) {
       const next = theme === 'dark' ? 'dark' : 'light';
       if (state.theme === next) return;
       state.theme = next;
-      if (state.initialized && state.tileLayer) {
-        state.tileLayer.setUrl(TILE_URLS[next]);
+      if (state.initialized) {
         renderTerminator();
         renderCountryHubs();
         renderStationPins();

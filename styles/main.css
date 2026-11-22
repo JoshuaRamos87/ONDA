@@ -2929,7 +2929,16 @@ body.modal-open {
   border-color: rgba(246, 183, 60, 0.45);
 }
 
-/* Leaflet Theme Harmonization */
+/* Leaflet Theme Harmonization (Keyless OSM tiles graded to match ONDA themes) */
+.atlas-map-canvas .leaflet-tile-pane {
+  filter: saturate(0.42) contrast(0.95) brightness(1.03) sepia(0.08);
+  transition: filter 0.25s ease;
+}
+
+[data-theme="dark"] .atlas-map-canvas .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) saturate(0.32) brightness(0.84) contrast(0.92);
+}
+
 .atlas-map-canvas .leaflet-control-zoom {
   border: 1px solid var(--border-subtle) !important;
   border-radius: var(--radius-sm) !important;
