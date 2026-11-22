@@ -1742,8 +1742,9 @@ function openStationModal(station) {
     ${custom ? '<button type="button" class="btn-ghost-sm" id="modal-edit-custom-btn">✎ Edit Stream</button>' : `<button type="button" class="btn-ghost-sm" id="modal-vote-btn" ${voted ? 'disabled' : ''}>${voted ? '✓ Upvoted' : '▲ Upvote'}</button>`}
     ${!custom ? '<button type="button" class="btn-ghost-sm" id="modal-share-btn">Copy Link</button>' : ''}
     ${streamUrl ? '<button type="button" class="btn-ghost-sm" id="modal-copy-stream-btn">Copy Stream URL</button>' : ''}
+    ${hasGeo || station.countrycode ? `<button type="button" class="btn-ghost-sm" id="modal-atlas-btn">${hasGeo ? '◎ Show on Atlas' : '◎ Country on Atlas'}</button>` : ''}
     ${homepageUrl ? `<a class="btn-ghost-sm" href="${escapeHtml(homepageUrl)}" target="_blank" rel="noopener noreferrer">Website ↗</a>` : ''}
-    ${hasGeo ? `<a class="btn-ghost-sm" href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(station.geo_lat)}&mlon=${encodeURIComponent(station.geo_long)}#map=8/${encodeURIComponent(station.geo_lat)}/${encodeURIComponent(station.geo_long)}" target="_blank" rel="noopener noreferrer">Map ↗</a>` : ''}
+    ${hasGeo ? `<a class="btn-ghost-sm" href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(station.geo_lat)}&mlon=${encodeURIComponent(station.geo_long)}#map=8/${encodeURIComponent(station.geo_lat)}/${encodeURIComponent(station.geo_long)}" target="_blank" rel="noopener noreferrer">OSM ↗</a>` : ''}
   `;
 
   if (dom.aboutModal.classList.contains('open')) {
@@ -1755,6 +1756,16 @@ function openStationModal(station) {
   dom.modal.classList.add('open');
   lockPageScroll();
   dom.modalCloseBtn.focus();
+
+  document.getElementById('modal-atlas-btn')?.addEventListener('click', () => {
+    closeStationModal();
+    switchView('atlas', { pushHistory: true });
+    ensureAtlasMounted().then((ctrl) => {
+      if (state.view === 'atlas') {
+        ctrl?.focusStation(station);
+      }
+    });
+  });
 
   document.getElementById('modal-edit-custom-btn')?.addEventListener('click', () => {
     closeStationModal();

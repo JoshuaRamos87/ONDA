@@ -374,6 +374,9 @@ export async function createAtlasController(deps) {
     hydratePill: document.getElementById('atlas-hydrate-pill'),
     hydrateText: document.getElementById('atlas-hydrate-text'),
     summaryBadge: document.getElementById('atlas-summary'),
+    jumpWrap: document.getElementById('atlas-jump-wrap'),
+    jumpInput: document.getElementById('atlas-jump-input'),
+    jumpResults: document.getElementById('atlas-jump-results'),
     nearMeBtn: document.getElementById('atlas-near-me-btn'),
     nearMeIcon: document.getElementById('atlas-near-me-icon'),
     nearMeSpinner: document.getElementById('atlas-near-me-spinner'),
@@ -410,9 +413,11 @@ export async function createAtlasController(deps) {
     drawerStations: [], // flat array for lookup & queue
     drawerMode: 'intro', // intro | cluster | country | nearme | inview
     drawerContext: null,
+    jumpItems: [],
 
-    // Near Me state
+    // Near Me / Dropped Spot state
     userCoords: null,
+    userLocationIsGps: true,
     nearMeRadiusKm: 150,
     nearMeCountryCode: '',
 
@@ -507,57 +512,130 @@ export async function createAtlasController(deps) {
      Map Initialization & Layers
      -------------------------------------------------------------------------- */
 
+  let initPromise = null;
+
   async function initMapIfNeeded() {
     if (state.initialized && state.map) return;
+    if (initPromise) return initPromise;
 
-    showLoading('Loading interactive map engine…');
-    const L = await ensureLeaflet();
-    state.L = L;
+    initPromise = (async () => {
+      showLoading('Loading interactive map engine…');
+      const L = await ensureLeaflet();
+      state.L = L;
 
-    state.canvasRenderer = L.canvas({ padding: 0.5 });
+      state.canvasRenderer = L.canvas({ padding: 0.5 });
 
-    state.map = L.map(dom.mapContainer, {
-      center: [22, 12],
-      zoom: 2,
-      minZoom: 2,
-      maxZoom: 14,
-      worldCopyJump: true,
-      preferCanvas: true,
-      maxBounds: [
-        [-85, -Infinity],
-        [85, Infinity],
-      ],
-      maxBoundsViscosity: 0.7,
+      state.map = L.map(dom.mapContainer, {
+        center: [22, 12],
+        zoom: 2,
+        minZoom: 2,
+        maxZoom: 14,
+        worldCopyJump: true,
+        preferCanvas: true,
+        tapHold: true,
+        maxBounds: [
+          [-85, -Infinity],
+          [85, Infinity],
+        ],
+        maxBoundsViscosity: 0.7,
+      });
+
+      state.tileLayer = L.tileLayer(OSM_TILE_URL, {
+        attribution: TILE_ATTRIBUTION,
+        maxZoom: 19,
+      }).addTo(state.map);
+
+      state.terminatorLayer = L.layerGroup().addTo(state.map);
+      state.hubsLayer = L.layerGroup().addTo(state.map);
+      state.pinsLayer = L.layerGroup().addTo(state.map);
+      state.userLayer = L.layerGroup().addTo(state.map);
+      state.activeLayer = L.layerGroup().addTo(state.map);
+
+      let zoomRedrawTimer = null;
+      state.map.on('zoomend', () => {
+        clearTimeout(zoomRedrawTimer);
+        zoomRedrawTimer = setTimeout(() => {
+          renderCountryHubs();
+          renderStationPins();
+        }, 60);
+      });
+
+      state.map.on('moveend', () => {
+        scheduleViewportHydration();
+      });
+
+      // Right-click (desktop) or press-and-hold (mobile) to run "Near this spot" without GPS
+      let lastSpotTriggerAt = 0;
+      const triggerSpotAtLatLng = (latlng) => {
+        if (!latlng || Date.now() - lastSpotTriggerAt < 450) return;
+        lastSpotTriggerAt = Date.now();
+        const lat = Math.max(-85, Math.min(85, Number(latlng.lat)));
+        const lng = normalizeLongitude(Number(latlng.lng));
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+        exploreSpot(lat, lng, { isUserLocation: false, fly: false });
+      };
+
+      state.map.on('contextmenu', (e) => {
+        if (e?.originalEvent) e.originalEvent.preventDefault();
+        triggerSpotAtLatLng(e?.latlng);
+      });
+
+      // Reliable touch long-press fallback for Android Chrome / iOS Safari
+      let touchHoldTimer = null;
+      let touchStartPoint = null;
+      dom.mapContainer?.addEventListener(
+        'touchstart',
+        (e) => {
+          if (!e.touches || e.touches.length !== 1) {
+            clearTimeout(touchHoldTimer);
+            return;
+          }
+          const touch = e.touches[0];
+          touchStartPoint = { x: touch.clientX, y: touch.clientY };
+          clearTimeout(touchHoldTimer);
+          touchHoldTimer = setTimeout(() => {
+            if (!state.map || !touchStartPoint) return;
+            const rect = dom.mapContainer.getBoundingClientRect();
+            const pt = L.point(touchStartPoint.x - rect.left, touchStartPoint.y - rect.top);
+            const latlng = state.map.containerPointToLatLng(pt);
+            triggerSpotAtLatLng(latlng);
+          }, 560);
+        },
+        { passive: true }
+      );
+
+      dom.mapContainer?.addEventListener(
+        'touchmove',
+        (e) => {
+          if (!touchHoldTimer || !touchStartPoint || !e.touches || e.touches.length !== 1) {
+            clearTimeout(touchHoldTimer);
+            return;
+          }
+          const t = e.touches[0];
+          if (Math.hypot(t.clientX - touchStartPoint.x, t.clientY - touchStartPoint.y) > 10) {
+            clearTimeout(touchHoldTimer);
+          }
+        },
+        { passive: true }
+      );
+
+      const cancelTouchHold = () => {
+        clearTimeout(touchHoldTimer);
+        touchStartPoint = null;
+      };
+      dom.mapContainer?.addEventListener('touchend', cancelTouchHold, { passive: true });
+      dom.mapContainer?.addEventListener('touchcancel', cancelTouchHold, { passive: true });
+
+      state.initialized = true;
+      renderTerminator();
+      renderActiveStationBeacon();
+      updateLocateActiveButton();
+    })().catch((err) => {
+      initPromise = null;
+      throw err;
     });
 
-    state.tileLayer = L.tileLayer(OSM_TILE_URL, {
-      attribution: TILE_ATTRIBUTION,
-      maxZoom: 19,
-    }).addTo(state.map);
-
-    state.terminatorLayer = L.layerGroup().addTo(state.map);
-    state.hubsLayer = L.layerGroup().addTo(state.map);
-    state.pinsLayer = L.layerGroup().addTo(state.map);
-    state.userLayer = L.layerGroup().addTo(state.map);
-    state.activeLayer = L.layerGroup().addTo(state.map);
-
-    let zoomRedrawTimer = null;
-    state.map.on('zoomend', () => {
-      clearTimeout(zoomRedrawTimer);
-      zoomRedrawTimer = setTimeout(() => {
-        renderCountryHubs();
-        renderStationPins();
-      }, 60);
-    });
-
-    state.map.on('moveend', () => {
-      scheduleViewportHydration();
-    });
-
-    state.initialized = true;
-    renderTerminator();
-    renderActiveStationBeacon();
-    updateLocateActiveButton();
+    return initPromise;
   }
 
   async function loadGlobalGeoStations({ forceReload = false } = {}) {
@@ -946,11 +1024,14 @@ export async function createAtlasController(deps) {
       radius: 6.5,
       color: '#FFFFFF',
       weight: 2.5,
-      fillColor: '#1B6CE3',
+      fillColor: state.userLocationIsGps ? '#1B6CE3' : accent,
       fillOpacity: 1,
       interactive: false,
     })
-      .bindTooltip('Your location', { direction: 'top', offset: [0, -8] })
+      .bindTooltip(state.userLocationIsGps ? 'Your location' : 'Selected spot', {
+        direction: 'top',
+        offset: [0, -8],
+      })
       .addTo(state.userLayer);
   }
 
@@ -1309,11 +1390,12 @@ export async function createAtlasController(deps) {
       ...countryFallback,
     ];
 
+    const modeLabel = state.userLocationIsGps ? 'Near Me' : 'Near This Spot';
     dom.drawerKicker.textContent = solar
-      ? `Near Me · ${solar.icon} ${solar.formatted}`
-      : 'Near Me';
+      ? `${modeLabel} · ${solar.icon} ${solar.formatted}`
+      : modeLabel;
     dom.drawerTitle.textContent = countryCode
-      ? `${countryCodeToFlag(countryCode)} Local Broadcasts`
+      ? `${countryCodeToFlag(countryCode)} ${state.userLocationIsGps ? 'Local Broadcasts' : `Near ${countryName}`}`
       : 'Nearest Broadcasts';
     dom.drawerSubtitle.textContent =
       radius > 0
@@ -1384,9 +1466,77 @@ export async function createAtlasController(deps) {
     dom.drawerList.innerHTML = parts.join('');
   }
 
+  /**
+   * Explore radio broadcasts near any geographic point (used by both GPS "Near Me"
+   * and right-click / press-and-hold "Near this spot").
+   */
+  async function exploreSpot(lat, lng, { isUserLocation = false, fly = true } = {}) {
+    state.userCoords = { lat, lng };
+    state.userLocationIsGps = Boolean(isUserLocation);
+    state.nearMeCountryCode = inferNearestCountryCode(lat, lng);
+
+    if (state.map) {
+      if (fly) {
+        state.map.flyTo([lat, lng], Math.max(state.map.getZoom(), 8), { duration: 0.9 });
+      } else if (state.map.getZoom() < 5) {
+        state.map.flyTo([lat, lng], 6, { duration: 0.7 });
+      }
+    }
+    renderUserRadiusOverlay();
+
+    dom.drawerKicker.textContent = isUserLocation ? 'Near Me' : 'Near This Spot';
+    dom.drawerTitle.textContent = 'Finding nearby stations…';
+    dom.drawerSubtitle.textContent = `Scanning broadcasts near ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
+    dom.drawerList.innerHTML = Array.from({ length: 5 })
+      .map(() => '<div class="atlas-row-skeleton" aria-hidden="true"></div>')
+      .join('');
+
+    let countryStations = [];
+    if (state.nearMeCountryCode) {
+      const code = state.nearMeCountryCode;
+      const [deepPinned, allCountryRes] = await Promise.all([
+        radioApi
+          .getGeoStations({
+            httpsOnly: state.httpsOnly,
+            countrycode: code,
+            limit: 600,
+          })
+          .catch(() => []),
+        radioApi
+          .searchStations({
+            countrycode: code,
+            httpsOnly: state.httpsOnly,
+            order: 'clickcount',
+            reverse: true,
+            limit: 50,
+            cache: true,
+          })
+          .catch(() => ({ stations: [] })),
+      ]);
+
+      if (deepPinned.length > 0) {
+        state.hydratedCountries.add(code);
+        mergeGeoStations(deepPinned);
+        renderStationPins();
+        updateSummaryBadge();
+      }
+      countryStations = allCountryRes.stations || [];
+      if (countryStations.length > 0) {
+        state.countryStationsCache.set(code, countryStations);
+      }
+    }
+
+    renderNearMeDrawer(countryStations);
+    showToast(
+      isUserLocation
+        ? 'Centered Atlas on your location'
+        : `Exploring broadcasts near ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`
+    );
+  }
+
   async function handleNearMeClick() {
     if (!navigator.geolocation) {
-      showToast('Geolocation is not supported in this browser. Tap any country on the map instead.');
+      showToast('Geolocation is not supported here — right-click or hold anywhere on the map instead.');
       return;
     }
 
@@ -1403,65 +1553,16 @@ export async function createAtlasController(deps) {
         });
       });
 
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      state.userCoords = { lat, lng };
-      state.nearMeCountryCode = inferNearestCountryCode(lat, lng);
-
-      if (state.map) {
-        state.map.flyTo([lat, lng], 8, { duration: 0.9 });
-      }
-      renderUserRadiusOverlay();
-
-      dom.drawerKicker.textContent = 'Near Me';
-      dom.drawerTitle.textContent = 'Finding local stations…';
-      dom.drawerSubtitle.textContent = `Scanning broadcasts near ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
-      dom.drawerList.innerHTML = Array.from({ length: 5 })
-        .map(() => '<div class="atlas-row-skeleton" aria-hidden="true"></div>')
-        .join('');
-
-      let countryStations = [];
-      if (state.nearMeCountryCode) {
-        const [deepPinned, allCountryRes] = await Promise.all([
-          radioApi
-            .getGeoStations({
-              httpsOnly: state.httpsOnly,
-              countrycode: state.nearMeCountryCode,
-              limit: 600,
-            })
-            .catch(() => []),
-          radioApi
-            .searchStations({
-              countrycode: state.nearMeCountryCode,
-              httpsOnly: state.httpsOnly,
-              order: 'clickcount',
-              reverse: true,
-              limit: 50,
-              cache: true,
-            })
-            .catch(() => ({ stations: [] })),
-        ]);
-
-        if (deepPinned.length > 0) {
-          state.hydratedCountries.add(state.nearMeCountryCode);
-          mergeGeoStations(deepPinned);
-          renderStationPins();
-          updateSummaryBadge();
-        }
-        countryStations = allCountryRes.stations || [];
-        if (countryStations.length > 0) {
-          state.countryStationsCache.set(state.nearMeCountryCode, countryStations);
-        }
-      }
-
-      renderNearMeDrawer(countryStations);
-      showToast('Centered Atlas on your location');
+      await exploreSpot(pos.coords.latitude, pos.coords.longitude, {
+        isUserLocation: true,
+        fly: true,
+      });
     } catch (err) {
       const denied = err && err.code === 1;
       showToast(
         denied
-          ? 'Location permission declined — tap any pin or Country Hub to explore.'
-          : 'Could not detect your location right now. Tap any region on the map to explore.'
+          ? 'Location permission declined — hold or right-click anywhere on the map for nearby stations.'
+          : 'Could not detect your location right now — hold or right-click anywhere on the map instead.'
       );
     } finally {
       dom.nearMeBtn.disabled = false;
@@ -1534,6 +1635,269 @@ export async function createAtlasController(deps) {
   }
 
   /* --------------------------------------------------------------------------
+     Quick Jump Search (Countries, Pinned Cities/States & Directory Lookup)
+     -------------------------------------------------------------------------- */
+
+  function hideJumpResults() {
+    if (!dom.jumpResults) return;
+    dom.jumpResults.classList.remove('open');
+    dom.jumpResults.innerHTML = '';
+    state.jumpItems = [];
+  }
+
+  function renderJumpResults(rawQuery) {
+    if (!dom.jumpResults) return;
+    const q = String(rawQuery || '').trim().toLowerCase();
+    if (q.length < 1) {
+      hideJumpResults();
+      return;
+    }
+
+    const items = [];
+
+    // 1. Matching Countries (prioritize prefix match)
+    const countryMatches = state.countries
+      .filter((c) => {
+        const code = (c.iso_3166_1 || '').toUpperCase();
+        if (!COUNTRY_CENTROIDS[code] || !c.stationcount) return false;
+        return c.name.toLowerCase().includes(q) || code.toLowerCase() === q;
+      })
+      .sort((a, b) => {
+        const aStarts = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || (b.stationcount || 0) - (a.stationcount || 0);
+      })
+      .slice(0, 4);
+
+    for (const c of countryMatches) {
+      const code = (c.iso_3166_1 || '').toUpperCase();
+      items.push({
+        type: 'country',
+        code,
+        name: c.name,
+        kind: 'Country',
+        label: `${countryCodeToFlag(code)} ${c.name}`,
+        meta: `${formatNumber(c.stationcount)} stations`,
+      });
+    }
+
+    // 2. Matching Cities / States among currently loaded pinned stations
+    if (q.length >= 2) {
+      const regionBuckets = new Map();
+      for (const s of state.geoStations) {
+        if (!s.state || !s.state.toLowerCase().includes(q)) continue;
+        const key = `${s.state.toLowerCase()}|${s.countrycode || ''}`;
+        let b = regionBuckets.get(key);
+        if (!b) {
+          b = {
+            stateName: s.state,
+            country: s.country,
+            countrycode: s.countrycode,
+            sumLat: 0,
+            sumLng: 0,
+            stations: [],
+          };
+          regionBuckets.set(key, b);
+        }
+        b.sumLat += Number(s.geo_lat);
+        b.sumLng += Number(s.geo_long);
+        b.stations.push(s);
+      }
+
+      const topRegions = Array.from(regionBuckets.values())
+        .sort((a, b) => b.stations.length - a.stations.length)
+        .slice(0, 3);
+
+      for (const r of topRegions) {
+        items.push({
+          type: 'region',
+          lat: r.sumLat / r.stations.length,
+          lng: r.sumLng / r.stations.length,
+          countrycode: r.countrycode,
+          stations: r.stations,
+          kind: 'Region',
+          label: `${countryCodeToFlag(r.countrycode)} ${r.stateName}${r.country ? `, ${r.country}` : ''}`,
+          meta: `${r.stations.length} pinned`,
+        });
+      }
+
+      // 3. Matching pinned stations by name
+      const stationMatches = state.geoStations
+        .filter((s) => s.name && s.name.toLowerCase().includes(q))
+        .slice(0, 3);
+
+      for (const s of stationMatches) {
+        items.push({
+          type: 'station',
+          station: s,
+          kind: 'Station',
+          label: `${countryCodeToFlag(s.countrycode)} ${s.name}`,
+          meta: s.state || s.country || 'Pinned',
+        });
+      }
+
+      // 4. Live directory search fallback for cities/stations not yet loaded
+      items.push({
+        type: 'remote',
+        query: rawQuery.trim(),
+        kind: 'Search',
+        label: `Find pinned stations for "${rawQuery.trim()}"`,
+        meta: 'Enter ↵',
+      });
+    }
+
+    if (items.length === 0) {
+      hideJumpResults();
+      return;
+    }
+
+    state.jumpItems = items;
+    dom.jumpResults.innerHTML = items
+      .map(
+        (item, idx) => `
+        <button
+          type="button"
+          class="search-suggestion-item"
+          role="option"
+          data-jump-index="${idx}"
+        >
+          <span class="suggestion-left">
+            <span class="suggestion-kind">${escapeHtml(item.kind)}</span>
+            <span class="suggestion-label">${escapeHtml(item.label)}</span>
+          </span>
+          <span class="suggestion-meta">${escapeHtml(item.meta)}</span>
+        </button>
+      `
+      )
+      .join('');
+    dom.jumpResults.classList.add('open');
+  }
+
+  async function remoteJumpSearch(query) {
+    const q = String(query || '').trim();
+    if (q.length < 2) return;
+
+    showLoading(`Searching Atlas for "${q}"…`);
+    try {
+      const [byState, byName] = await Promise.all([
+        radioApi
+          .searchStations({
+            state: q,
+            hasGeoInfo: true,
+            httpsOnly: state.httpsOnly,
+            order: 'clickcount',
+            reverse: true,
+            limit: 30,
+          })
+          .catch(() => ({ stations: [] })),
+        radioApi
+          .searchStations({
+            name: q,
+            hasGeoInfo: true,
+            httpsOnly: state.httpsOnly,
+            order: 'clickcount',
+            reverse: true,
+            limit: 20,
+          })
+          .catch(() => ({ stations: [] })),
+      ]);
+
+      const merged = [];
+      const seen = new Set();
+      for (const s of [...(byState.stations || []), ...(byName.stations || [])]) {
+        if (!hasValidGeo(s) || seen.has(s.stationuuid)) continue;
+        seen.add(s.stationuuid);
+        merged.push(s);
+      }
+
+      if (merged.length === 0) {
+        showToast(`No GPS-pinned stations found matching "${q}". Try a country name.`);
+        return;
+      }
+
+      mergeGeoStations(merged);
+      renderStationPins();
+      updateSummaryBadge();
+
+      const top = merged[0];
+      const lat = Number(top.geo_lat);
+      const lng = Number(top.geo_long);
+      if (state.map) {
+        state.map.flyTo([lat, lng], merged.length === 1 ? 8 : 6, { duration: 0.85 });
+      }
+      openClusterInDrawer({
+        lat,
+        lng,
+        stations: merged,
+        canZoomCloser: false,
+      });
+      if (top.countrycode) {
+        hydrateCountryPins(top.countrycode);
+      }
+    } finally {
+      hideLoading();
+    }
+  }
+
+  async function executeJumpItem(item) {
+    if (!item) return;
+    hideJumpResults();
+    if (dom.jumpInput) dom.jumpInput.value = '';
+
+    if (item.type === 'country') {
+      await openCountryInDrawer(item.code, item.name);
+    } else if (item.type === 'region') {
+      if (state.map) {
+        state.map.flyTo([item.lat, item.lng], 7, { duration: 0.8 });
+      }
+      openClusterInDrawer({
+        lat: item.lat,
+        lng: item.lng,
+        stations: item.stations,
+        canZoomCloser: false,
+      });
+      if (item.countrycode) hydrateCountryPins(item.countrycode);
+    } else if (item.type === 'station') {
+      await focusStationOnMap(item.station);
+    } else if (item.type === 'remote') {
+      await remoteJumpSearch(item.query);
+    }
+  }
+
+  async function focusStationOnMap(station) {
+    if (!station) return;
+    if (!state.initialized || !state.map) {
+      await controller.onShow();
+    }
+    if (!state.map) return;
+
+    if (hasValidGeo(station)) {
+      mergeGeoStations([station]);
+      renderStationPins();
+      updateSummaryBadge();
+
+      const lat = Number(station.geo_lat);
+      const lng = Number(station.geo_long);
+      state.map.flyTo([lat, lng], Math.max(state.map.getZoom(), 8), { duration: 0.85 });
+      openClusterInDrawer({
+        lat,
+        lng,
+        stations: [station],
+        canZoomCloser: false,
+      });
+      if (station.countrycode) {
+        hydrateCountryPins(station.countrycode);
+      }
+    } else if (station.countrycode) {
+      const code = station.countrycode.toUpperCase();
+      const meta = getCountryMeta(code);
+      await openCountryInDrawer(code, station.country || meta?.name || code);
+    } else {
+      showToast('This station has no geographic location data.');
+    }
+  }
+
+  /* --------------------------------------------------------------------------
      UI Event Binding (Once)
      -------------------------------------------------------------------------- */
 
@@ -1546,14 +1910,49 @@ export async function createAtlasController(deps) {
         showToast('Current station has no GPS coordinates.');
         return;
       }
-      const pos = [Number(current.geo_lat), Number(current.geo_long)];
-      state.map.flyTo(pos, Math.max(state.map.getZoom(), 7), { duration: 0.85 });
-      openClusterInDrawer({
-        lat: pos[0],
-        lng: pos[1],
-        stations: [current],
-        canZoomCloser: false,
-      });
+      focusStationOnMap(current);
+    });
+
+    dom.jumpInput?.addEventListener('input', () => {
+      renderJumpResults(dom.jumpInput.value);
+    });
+
+    dom.jumpInput?.addEventListener('focus', () => {
+      if (dom.jumpInput.value.trim().length >= 1) {
+        renderJumpResults(dom.jumpInput.value);
+      }
+    });
+
+    dom.jumpInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideJumpResults();
+        dom.jumpInput.blur();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (state.jumpItems.length > 0) {
+          executeJumpItem(state.jumpItems[0]);
+        } else if (dom.jumpInput.value.trim().length >= 2) {
+          hideJumpResults();
+          const q = dom.jumpInput.value.trim();
+          dom.jumpInput.value = '';
+          remoteJumpSearch(q);
+        }
+      }
+    });
+
+    dom.jumpResults?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-jump-index]');
+      if (!btn) return;
+      const idx = Number(btn.dataset.jumpIndex);
+      if (Number.isFinite(idx) && state.jumpItems[idx]) {
+        executeJumpItem(state.jumpItems[idx]);
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (dom.jumpWrap && !dom.jumpWrap.contains(e.target)) {
+        hideJumpResults();
+      }
     });
 
     dom.inViewBtn?.addEventListener('click', exploreCurrentMapView);
@@ -1657,7 +2056,7 @@ export async function createAtlasController(deps) {
      Public Controller API (called from js/app.js)
      -------------------------------------------------------------------------- */
 
-  return {
+  const controller = {
     async onShow() {
       state.visible = true;
       try {
@@ -1680,8 +2079,11 @@ export async function createAtlasController(deps) {
       updateLocateActiveButton();
     },
 
+    focusStation: focusStationOnMap,
+
     onHide() {
       state.visible = false;
+      hideJumpResults();
       clearTimeout(state.hydrateTimer);
       stopTerminatorClock();
     },
@@ -1778,4 +2180,6 @@ export async function createAtlasController(deps) {
 
     findStation,
   };
+
+  return controller;
 }

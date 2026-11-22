@@ -322,6 +322,23 @@
         </div>
 
         <div class="atlas-actions">
+          <div class="atlas-jump-wrap" id="atlas-jump-wrap">
+            <span class="atlas-jump-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+              </svg>
+            </span>
+            <label for="atlas-jump-input" class="sr-only">Jump to country, city, or station on Atlas</label>
+            <input
+              type="search"
+              id="atlas-jump-input"
+              class="atlas-jump-input"
+              placeholder="Jump to country or city…"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <div id="atlas-jump-results" class="atlas-jump-results" role="listbox" aria-label="Atlas location suggestions"></div>
+          </div>
           <button type="button" id="atlas-near-me-btn" class="btn-primary btn-primary-sm" title="Find radio stations near your current location">
             <svg id="atlas-near-me-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
@@ -349,8 +366,9 @@
           </div>
           <div class="atlas-legend" aria-hidden="true">
             <span class="atlas-legend-item"><span class="atlas-dot exact"></span> Pinned stations</span>
-            <span class="atlas-legend-item"><span class="atlas-dot hub"></span> Country hub (all stations)</span>
+            <span class="atlas-legend-item"><span class="atlas-dot hub"></span> Country hub</span>
             <span class="atlas-legend-item"><span class="atlas-dot night"></span> Solar night</span>
+            <span class="atlas-legend-item atlas-legend-hint">Hold / right-click map for nearby</span>
           </div>
         </div>
 
@@ -359,7 +377,7 @@
             <div class="atlas-drawer-kicker" id="atlas-drawer-kicker">Global Atlas</div>
             <h3 class="atlas-drawer-title" id="atlas-drawer-title">Explore Stations Worldwide</h3>
             <p class="atlas-drawer-subtitle" id="atlas-drawer-subtitle">
-              Tap any accent pin for exact city stations, any dashed ring for a full country, or hit Near Me.
+              Tap pins or Country Hubs, jump to any country/city, or press-and-hold (right-click) anywhere on the map for nearby broadcasts.
             </p>
             <div class="atlas-drawer-controls" id="atlas-drawer-controls"></div>
           </div>

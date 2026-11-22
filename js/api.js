@@ -297,6 +297,7 @@ class RadioBrowserClient {
     if (filters.name) params.name = filters.name.trim();
     if (filters.tag) params.tag = filters.tag.trim();
     if (filters.countrycode) params.countrycode = filters.countrycode.trim().toUpperCase();
+    if (filters.state) params.state = filters.state.trim();
     if (filters.language) params.language = filters.language.trim();
     if (filters.codec) params.codec = filters.codec.trim();
     if (filters.bitrateMin && Number(filters.bitrateMin) > 0) {
