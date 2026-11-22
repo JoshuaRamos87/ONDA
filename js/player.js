@@ -1,26 +1,30 @@
 /**
  * ONDA — Live Audio Stream Engine
  *
- * Handles direct Icecast/Shoutcast audio streams (MP3, AAC, OGG, FLAC) via HTML5 <audio>
- * AND adaptive HLS (.m3u8) streams via hls.js (with native Safari HLS support).
+ * Handles direct Icecast/Shoutcast audio streams (MP3, AAC, OGG, FLAC) via a DOM-mounted
+ * HTML5 <audio playsinline> element AND adaptive HLS (.m3u8) streams via hls.js / native Safari HLS.
  *
- * Edge-case hardening:
- * - Playback session token ignores stale async/HLS/error events during rapid station switching.
- * - 12-second connection watchdog prevents getting stuck on "TUNING" on blackholed servers.
- * - Smart candidate URL list prioritizes HTTPS streams on HTTPS pages (e.g., GitHub Pages)
- *   so an HTTP url_resolved still falls back to an HTTPS station.url before failing.
- * - Pausing a live broadcast tears down the stale buffer; resuming reconnects to the live edge.
- * - Separate 1-second tick channel prevents DOM churn and keeps CSS animations smooth.
+ * Mobile & PWA Background Playback Hardening:
+ * - Preserves audio.src on pause() so Android Chrome keeps the notification shade & lock-screen
+ *   player card alive; resume() cleanly jumps back to the live broadcast edge.
+ * - Automatic exponential-backoff reconnect on unexpected stream drops (ended, error, stalls)
+ *   plus automatic recovery when the device regains connectivity (window 'online' event).
+ * - Built-in hls.js network/media error recovery before falling back or reconnecting.
+ * - Background-aware stall watchdog (longer tolerance when document.hidden).
+ * - Guaranteed ONDA PNG fallback artwork in MediaSession metadata.
+ * - Suspends VU canvas animation while document.hidden to minimize background battery/CPU usage.
  */
 
 import { radioApi } from './api.js';
 
-const CONNECT_TIMEOUT_MS = 12000;
+const FOREGROUND_TIMEOUT_MS = 14000;
+const BACKGROUND_TIMEOUT_MS = 28000;
+const RECONNECT_DELAYS_MS = [1500, 3000, 6000, 12000];
+const LIVE_RECONNECT_PAUSE_THRESHOLD_MS = 3000;
 
 export class RadioPlayer {
   constructor() {
-    this.audio = new Audio();
-    this.audio.preload = 'none';
+    this.audio = this.createMountedAudioElement();
 
     this.hls = null;
     this.currentStation = null;
@@ -28,9 +32,16 @@ export class RadioPlayer {
     this.errorMessage = '';
 
     this.sessionId = 0;
+    this.shouldBePlaying = false;
+    this.pausedAt = 0;
+
     this.candidateUrls = [];
     this.candidateIndex = 0;
     this.connectTimer = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.hlsNetworkRecoveries = 0;
+    this.hlsMediaRecoveries = 0;
 
     this.elapsedSeconds = 0;
     this.elapsedInterval = null;
@@ -44,10 +55,41 @@ export class RadioPlayer {
 
     this.vuCanvas = null;
     this.vuRaf = null;
+    this.vuRenderFn = null;
     this.vuBars = new Array(14).fill(0.08);
     this.vuTargets = new Array(14).fill(0.08);
 
     this.bindAudioEvents();
+    this.bindLifecycleEvents();
+  }
+
+  /**
+   * Mount a hidden <audio playsinline> element in the DOM for stronger Android Chrome / WebAPK
+   * background audio and MediaSession persistence compared to a detached Audio() instance.
+   */
+  createMountedAudioElement() {
+    let audio;
+    if (typeof document !== 'undefined' && document.createElement) {
+      audio = document.createElement('audio');
+      audio.id = 'onda-audio-engine';
+      audio.preload = 'none';
+      audio.playsInline = true;
+      audio.setAttribute('playsinline', '');
+      audio.style.display = 'none';
+      if (document.body) {
+        document.body.appendChild(audio);
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (!audio.isConnected && document.body) {
+            document.body.appendChild(audio);
+          }
+        });
+      }
+    } else {
+      audio = new Audio();
+      audio.preload = 'none';
+    }
+    return audio;
   }
 
   onChange(callback) {
@@ -111,18 +153,36 @@ export class RadioPlayer {
     }
   }
 
+  clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
   armConnectTimeout(sessionId) {
     this.clearConnectTimeout();
+    const timeoutMs =
+      typeof document !== 'undefined' && document.hidden
+        ? BACKGROUND_TIMEOUT_MS
+        : FOREGROUND_TIMEOUT_MS;
+
     this.connectTimer = setTimeout(() => {
-      if (sessionId !== this.sessionId || this.status !== 'loading') return;
+      if (sessionId !== this.sessionId || !this.shouldBePlaying || this.status !== 'loading') {
+        return;
+      }
       this.handlePlaybackFailure(sessionId, 'timed out');
-    }, CONNECT_TIMEOUT_MS);
+    }, timeoutMs);
   }
 
   bindAudioEvents() {
     this.audio.addEventListener('playing', () => {
-      if (!this.currentStation || this.status === 'paused' || this.status === 'idle') return;
+      if (!this.currentStation || !this.shouldBePlaying) return;
       this.clearConnectTimeout();
+      this.clearReconnectTimer();
+      this.reconnectAttempt = 0;
+      this.hlsNetworkRecoveries = 0;
+      this.hlsMediaRecoveries = 0;
       this.status = 'playing';
       this.errorMessage = '';
       this.startTimer();
@@ -131,7 +191,7 @@ export class RadioPlayer {
     });
 
     this.audio.addEventListener('waiting', () => {
-      if (this.currentStation && this.status === 'playing') {
+      if (this.currentStation && this.shouldBePlaying && this.status === 'playing') {
         this.status = 'loading';
         this.armConnectTimeout(this.sessionId);
         this.emit();
@@ -139,14 +199,31 @@ export class RadioPlayer {
     });
 
     this.audio.addEventListener('stalled', () => {
-      if (this.currentStation && this.status === 'loading') {
+      if (this.currentStation && this.shouldBePlaying && this.status === 'loading') {
         this.armConnectTimeout(this.sessionId);
       }
     });
 
+    // Live radio streams should never "end"; an 'ended' event means the server dropped the socket
+    this.audio.addEventListener('ended', () => {
+      if (!this.currentStation || !this.shouldBePlaying) return;
+      this.scheduleAutoReconnect(this.sessionId, 'stream ended');
+    });
+
+    // Reflect external OS pauses (e.g., Android Audio Focus taken by another app or headset unplug)
     this.audio.addEventListener('pause', () => {
       if (this.status === 'playing') {
+        this.shouldBePlaying = false;
+        this.pausedAt = Date.now();
         this.clearConnectTimeout();
+        this.clearReconnectTimer();
+        if (this.hls) {
+          try {
+            this.hls.stopLoad();
+          } catch {
+            // Ignore
+          }
+        }
         this.status = 'paused';
         this.stopTimer();
         this.updateMediaSessionState('paused');
@@ -155,11 +232,39 @@ export class RadioPlayer {
     });
 
     this.audio.addEventListener('error', () => {
-      if (!this.currentStation || this.status === 'paused' || this.status === 'idle') return;
-      // Ignore error fired when we intentionally clear src on pause/stop
+      if (!this.currentStation || !this.shouldBePlaying) return;
       if (!this.audio.getAttribute('src') && !this.hls) return;
       this.handlePlaybackFailure(this.sessionId);
     });
+  }
+
+  bindLifecycleEvents() {
+    if (typeof window === 'undefined') return;
+
+    // Automatically recover playback after Wi-Fi <-> 5G handoff or returning from a dead zone
+    window.addEventListener('online', () => {
+      if (!this.currentStation || !this.shouldBePlaying) return;
+      if (this.status === 'error' || this.status === 'loading') {
+        this.reconnectAttempt = 0;
+        this.clearReconnectTimer();
+        this.reconnectLive(this.sessionId);
+      }
+    });
+
+    // Pause VU animation while backgrounded to save Pixel battery and prevent OS process eviction
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (!this.vuRenderFn) return;
+        if (document.hidden) {
+          if (this.vuRaf) {
+            cancelAnimationFrame(this.vuRaf);
+            this.vuRaf = null;
+          }
+        } else if (!this.vuRaf) {
+          this.vuRaf = requestAnimationFrame(this.vuRenderFn);
+        }
+      });
+    }
   }
 
   destroyHls() {
@@ -173,8 +278,13 @@ export class RadioPlayer {
     }
   }
 
+  /**
+   * Full teardown used only for stop() or unrecoverable station errors — NEVER on pause(),
+   * because stripping audio.src causes Android Chrome to dismiss the notification shade card.
+   */
   teardownStream() {
     this.clearConnectTimeout();
+    this.clearReconnectTimer();
     this.destroyHls();
     this.audio.pause();
     this.audio.removeAttribute('src');
@@ -234,8 +344,16 @@ export class RadioPlayer {
     }
 
     const sessionId = ++this.sessionId;
-    this.teardownStream();
+    this.clearConnectTimeout();
+    this.clearReconnectTimer();
+    this.destroyHls();
     this.stopTimer();
+
+    this.shouldBePlaying = true;
+    this.pausedAt = 0;
+    this.reconnectAttempt = 0;
+    this.hlsNetworkRecoveries = 0;
+    this.hlsMediaRecoveries = 0;
     this.elapsedSeconds = 0;
     this.currentStation = station;
     this.status = 'loading';
@@ -249,6 +367,8 @@ export class RadioPlayer {
     const { playable, blockedHttpOnly } = this.buildCandidateUrls(station);
 
     if (playable.length === 0) {
+      this.shouldBePlaying = false;
+      this.teardownStream();
       if (blockedHttpOnly) {
         this.failWithMessage(
           sessionId,
@@ -266,7 +386,7 @@ export class RadioPlayer {
   }
 
   async loadUrl(streamUrl, station, sessionId) {
-    if (sessionId !== this.sessionId) return;
+    if (sessionId !== this.sessionId || !this.shouldBePlaying) return;
 
     this.armConnectTimeout(sessionId);
 
@@ -276,36 +396,70 @@ export class RadioPlayer {
     if (isHls) {
       // Safari / iOS supports HLS natively
       if (this.audio.canPlayType('application/vnd.apple.mpegurl')) {
+        this.destroyHls();
         this.audio.src = streamUrl;
         this.tryPlay(sessionId);
         return;
       }
 
-      // Chromium / Firefox via hls.js
+      // Chromium / Firefox via hls.js with mobile-resilient buffering & recovery
       if (typeof window.Hls !== 'undefined' && window.Hls.isSupported()) {
         this.destroyHls();
+        this.hlsNetworkRecoveries = 0;
+        this.hlsMediaRecoveries = 0;
         const hls = new window.Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
           backBufferLength: 30,
+          manifestLoadingMaxRetry: 4,
+          levelLoadingMaxRetry: 4,
+          fragLoadingMaxRetry: 4,
         });
         this.hls = hls;
         hls.loadSource(streamUrl);
         hls.attachMedia(this.audio);
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-          if (sessionId !== this.sessionId) return;
+          if (sessionId !== this.sessionId || !this.shouldBePlaying) return;
           this.tryPlay(sessionId);
         });
         hls.on(window.Hls.Events.ERROR, (_event, data) => {
-          if (sessionId !== this.sessionId) return;
-          if (data && data.fatal) {
-            this.handlePlaybackFailure(sessionId);
+          if (sessionId !== this.sessionId || !this.shouldBePlaying) return;
+          if (!data || !data.fatal) return;
+
+          if (
+            data.type === window.Hls.ErrorTypes.NETWORK_ERROR &&
+            this.hlsNetworkRecoveries < 2
+          ) {
+            this.hlsNetworkRecoveries += 1;
+            this.status = 'loading';
+            this.armConnectTimeout(sessionId);
+            this.emit();
+            hls.startLoad();
+            return;
           }
+
+          if (
+            data.type === window.Hls.ErrorTypes.MEDIA_ERROR &&
+            this.hlsMediaRecoveries < 2
+          ) {
+            this.hlsMediaRecoveries += 1;
+            this.status = 'loading';
+            this.armConnectTimeout(sessionId);
+            this.emit();
+            hls.recoverMediaError();
+            return;
+          }
+
+          this.handlePlaybackFailure(sessionId);
         });
         return;
       }
     }
 
+    // Assign directly without removing src first so Android keeps the active MediaSession alive
+    this.destroyHls();
     this.audio.src = streamUrl;
     this.audio.load();
     this.tryPlay(sessionId);
@@ -315,14 +469,16 @@ export class RadioPlayer {
     try {
       await this.audio.play();
     } catch (err) {
-      if (sessionId !== this.sessionId) return;
+      if (sessionId !== this.sessionId || !this.shouldBePlaying) return;
       if (err && err.name === 'AbortError') {
         return;
       }
       if (err && err.name === 'NotAllowedError') {
+        this.shouldBePlaying = false;
         this.clearConnectTimeout();
         this.status = 'paused';
         this.errorMessage = 'Click Play to start audio (browser autoplay policy).';
+        this.updateMediaSessionState('paused');
         this.emit();
         return;
       }
@@ -330,8 +486,54 @@ export class RadioPlayer {
     }
   }
 
+  /**
+   * Reconnect cleanly to the current station's live stream URL without breaking MediaSession.
+   */
+  reconnectLive(sessionId) {
+    if (sessionId !== this.sessionId || !this.currentStation || !this.shouldBePlaying) return;
+    const { playable } = this.buildCandidateUrls(this.currentStation);
+    if (playable.length === 0) return;
+
+    this.candidateUrls = playable;
+    this.candidateIndex = 0;
+    this.status = 'loading';
+    this.errorMessage = '';
+    this.emit();
+    this.loadUrl(this.candidateUrls[0], this.currentStation, sessionId);
+  }
+
+  /**
+   * Retry transient mid-stream drops with exponential backoff (1.5s -> 3s -> 6s -> 12s).
+   * Keeps audio.src attached so the Android notification card remains available.
+   */
+  scheduleAutoReconnect(sessionId, reason = '') {
+    if (sessionId !== this.sessionId || !this.currentStation || !this.shouldBePlaying) return;
+
+    if (this.reconnectAttempt >= RECONNECT_DELAYS_MS.length) {
+      const msg =
+        reason === 'timed out'
+          ? 'Connection timed out — tap Play to retry or switch to the next station.'
+          : 'Stream connection lost — tap Play to reconnect or try the next station.';
+      this.failWithMessage(sessionId, msg);
+      return;
+    }
+
+    const delayMs = RECONNECT_DELAYS_MS[this.reconnectAttempt];
+    this.reconnectAttempt += 1;
+    this.clearConnectTimeout();
+    this.clearReconnectTimer();
+    this.status = 'loading';
+    this.errorMessage = '';
+    this.emit();
+
+    this.reconnectTimer = setTimeout(() => {
+      if (sessionId !== this.sessionId || !this.shouldBePlaying) return;
+      this.reconnectLive(sessionId);
+    }, delayMs);
+  }
+
   handlePlaybackFailure(sessionId, reason = '') {
-    if (sessionId !== this.sessionId || !this.currentStation) return;
+    if (sessionId !== this.sessionId || !this.currentStation || !this.shouldBePlaying) return;
 
     this.clearConnectTimeout();
     this.candidateIndex += 1;
@@ -342,7 +544,15 @@ export class RadioPlayer {
       return;
     }
 
-    this.teardownStream();
+    // If this station was already playing (transient mobile drop), auto-reconnect with backoff!
+    if (this.elapsedSeconds > 0 || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      this.scheduleAutoReconnect(sessionId, reason);
+      return;
+    }
+
+    // Initial tune failed on all candidate URLs — report error cleanly without wiping MediaSession
+    this.destroyHls();
+    this.audio.pause();
     this.stopTimer();
     const msg =
       reason === 'timed out'
@@ -354,6 +564,7 @@ export class RadioPlayer {
   failWithMessage(sessionId, msg) {
     if (sessionId !== this.sessionId) return;
     this.clearConnectTimeout();
+    this.clearReconnectTimer();
     this.status = 'error';
     this.errorMessage = msg;
     this.stopTimer();
@@ -362,11 +573,25 @@ export class RadioPlayer {
   }
 
   /**
-   * Pause live stream cleanly by releasing the stream socket so resuming later jumps to the live edge.
+   * Pause playback while keeping audio.src intact so the Android notification shade
+   * and lock-screen player card remain visible for one-tap resume.
    */
   pause() {
     this.sessionId += 1;
-    this.teardownStream();
+    this.shouldBePlaying = false;
+    this.pausedAt = Date.now();
+    this.clearConnectTimeout();
+    this.clearReconnectTimer();
+
+    if (this.hls) {
+      try {
+        this.hls.stopLoad();
+      } catch {
+        // Ignore
+      }
+    }
+
+    this.audio.pause();
     this.status = 'paused';
     this.stopTimer();
     this.updateMediaSessionState('paused');
@@ -374,19 +599,51 @@ export class RadioPlayer {
   }
 
   /**
-   * Reconnect cleanly to the live broadcast edge.
+   * Resume playback. If paused briefly (< 3s), resumes instantly; otherwise reconnects cleanly
+   * to the live broadcast edge without stripping audio.src first.
    */
   resume() {
     if (!this.currentStation) return;
     const station = this.currentStation;
     const sessionId = ++this.sessionId;
-    this.teardownStream();
+    const pauseDuration = this.pausedAt ? Date.now() - this.pausedAt : Infinity;
+
+    this.shouldBePlaying = true;
+    this.pausedAt = 0;
+    this.reconnectAttempt = 0;
+    this.clearConnectTimeout();
+    this.clearReconnectTimer();
     this.status = 'loading';
     this.errorMessage = '';
     this.emit();
 
+    // Fast path for HLS: jump straight to live edge using existing hls.js instance
+    if (this.hls) {
+      this.armConnectTimeout(sessionId);
+      try {
+        this.hls.startLoad(-1);
+        this.tryPlay(sessionId);
+        return;
+      } catch {
+        // Fall through to full live reload
+      }
+    }
+
+    // Fast path for very short pause (< 3s) on a healthy direct stream
+    if (
+      pauseDuration < LIVE_RECONNECT_PAUSE_THRESHOLD_MS &&
+      this.audio.getAttribute('src') &&
+      this.audio.readyState >= 2
+    ) {
+      this.armConnectTimeout(sessionId);
+      this.tryPlay(sessionId);
+      return;
+    }
+
+    // Standard live-edge reconnect (never clears src to empty first)
     const { playable, blockedHttpOnly } = this.buildCandidateUrls(station);
     if (playable.length === 0) {
+      this.shouldBePlaying = false;
       this.failWithMessage(
         sessionId,
         blockedHttpOnly
@@ -412,6 +669,8 @@ export class RadioPlayer {
 
   stop() {
     this.sessionId += 1;
+    this.shouldBePlaying = false;
+    this.pausedAt = 0;
     this.teardownStream();
     this.stopTimer();
     this.elapsedSeconds = 0;
@@ -477,7 +736,8 @@ export class RadioPlayer {
     try {
       navigator.mediaSession.setActionHandler('play', () => this.resume());
       navigator.mediaSession.setActionHandler('pause', () => this.pause());
-      navigator.mediaSession.setActionHandler('stop', () => this.stop());
+      // Map hardware/OS 'stop' to pause() so the notification card remains resumable
+      navigator.mediaSession.setActionHandler('stop', () => this.pause());
       if (onPrev) navigator.mediaSession.setActionHandler('previoustrack', onPrev);
       if (onNext) navigator.mediaSession.setActionHandler('nexttrack', onNext);
     } catch {
@@ -488,10 +748,17 @@ export class RadioPlayer {
   updateMediaSessionMetadata(station) {
     if (!('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return;
     try {
-      const artwork =
-        station.favicon && station.favicon.startsWith('https://')
-          ? [{ src: station.favicon, sizes: '192x192', type: 'image/png' }]
-          : [];
+      const artwork = [];
+      if (station.favicon && station.favicon.startsWith('https://')) {
+        artwork.push({ src: station.favicon, sizes: '192x192' });
+      }
+      // Always provide ONDA's own crisp PNG icons as fallback artwork for the Android media card
+      const base = window.location.href;
+      artwork.push(
+        { src: new URL('./icons/icon-192.png', base).href, sizes: '192x192', type: 'image/png' },
+        { src: new URL('./icons/icon-512.png', base).href, sizes: '512x512', type: 'image/png' }
+      );
+
       navigator.mediaSession.metadata = new MediaMetadata({
         title: station.name || 'ONDA World Radio',
         artist:
@@ -521,6 +788,11 @@ export class RadioPlayer {
 
     let frame = 0;
     const render = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.vuRaf = null;
+        return;
+      }
+
       frame++;
       const width = canvas.width;
       const height = canvas.height;
@@ -577,8 +849,11 @@ export class RadioPlayer {
       this.vuRaf = requestAnimationFrame(render);
     };
 
+    this.vuRenderFn = render;
     if (this.vuRaf) cancelAnimationFrame(this.vuRaf);
-    this.vuRaf = requestAnimationFrame(render);
+    if (typeof document === 'undefined' || !document.hidden) {
+      this.vuRaf = requestAnimationFrame(render);
+    }
   }
 }
 

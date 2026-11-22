@@ -6,7 +6,7 @@
 export const APP_CONFIG = Object.freeze({
   name: 'ONDA',
   tagline: 'World Radio Broadcast Tuner',
-  version: '1.1.2',
+  version: '1.1.3',
   repoUrl: 'https://github.com/JoshuaRamos87/ONDA',
   repoLabel: 'JoshuaRamos87/ONDA',
   apiHomeUrl: 'https://www.radio-browser.info/',
