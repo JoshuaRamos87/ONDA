@@ -5,28 +5,8 @@
  * on desktop Chromium browsers while keeping the underlying audio stream uninterrupted.
  */
 
-export function isDesktopPipSupported() {
-  if (typeof window === 'undefined') return false;
-  if (
-    !('documentPictureInPicture' in window) ||
-    typeof window.documentPictureInPicture?.requestWindow !== 'function'
-  ) {
-    return false;
-  }
-
-  if (navigator.userAgentData && navigator.userAgentData.mobile) {
-    return false;
-  }
-
-  if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')) {
-    return false;
-  }
-
-  return (
-    window.matchMedia('(hover: hover) and (pointer: fine)').matches ||
-    window.matchMedia('(any-pointer: fine)').matches
-  );
-}
+import { isDesktopPipSupported } from './utils.js';
+export { isDesktopPipSupported };
 
 const PIP_WIDGET_CSS = `
   html, body {
