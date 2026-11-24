@@ -1700,6 +1700,24 @@ img {
   fill: currentColor;
 }
 
+.deck-pip-btn.is-open {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--accent-bright);
+}
+
+.deck-pip-btn.is-open:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+@media (hover: none), (pointer: coarse) {
+  #deck-pip-btn,
+  #kbd-hint-pip {
+    display: none !important;
+  }
+}
+
 .deck-play-btn {
   width: 46px;
   height: 46px;

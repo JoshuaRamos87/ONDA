@@ -472,6 +472,7 @@
       <span><kbd>[</kbd> <kbd>]</kbd> Prev/Next</span>
       <span><kbd>M</kbd> Mute</span>
       <span><kbd>R</kbd> Random</span>
+      <span id="kbd-hint-pip" style="display:none"><kbd>P</kbd> Mini-Tuner</span>
     </div>
   </footer>
 
@@ -590,6 +591,13 @@
           <label for="volume-slider" class="sr-only">Volume</label>
           <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.02" value="0.82">
         </div>
+
+        <button type="button" id="deck-pip-btn" class="deck-btn deck-pip-btn" aria-label="Pop out Floating Mini-Tuner" aria-pressed="false" title="Pop out Mini-Tuner (P)" style="display:none">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="4" width="20" height="15" rx="2"/>
+            <rect x="11" y="10" width="8" height="6" rx="1" fill="currentColor" fill-opacity="0.22"/>
+          </svg>
+        </button>
       </div>
     </div>
   </aside>

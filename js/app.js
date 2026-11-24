@@ -8,6 +8,7 @@ import { APP_CONFIG, ACCENT_THEMES } from './config.js';
 import { radioApi } from './api.js';
 import { radioPlayer } from './player.js';
 import { storage, createCustomUuid, isCustomStation } from './storage.js';
+import { isDesktopPipSupported, createMiniTunerController } from './pip.js';
 
 const PAGE_SIZE = 36;
 
@@ -114,6 +115,7 @@ const state = {
 
 let atlasController = null;
 let atlasLoadingPromise = null;
+let miniTuner = null;
 
 /* ==========================================================================
    DOM References
@@ -233,6 +235,8 @@ const dom = {
   volIconOn: document.getElementById('vol-icon-on'),
   volIconMuted: document.getElementById('vol-icon-muted'),
   volumeSlider: document.getElementById('volume-slider'),
+  deckPipBtn: document.getElementById('deck-pip-btn'),
+  kbdHintPip: document.getElementById('kbd-hint-pip'),
 
   // Modals & Toast
   modal: document.getElementById('station-modal'),
@@ -419,6 +423,7 @@ function applyTheme(theme) {
   }
   storage.setPref('theme', theme);
   atlasController?.setTheme(theme);
+  miniTuner?.syncTheme();
 }
 
 function applyAccent(accentId) {
@@ -431,6 +436,7 @@ function applyAccent(accentId) {
   storage.setPref('accent', match.id);
   renderAccentSwatches(match.id);
   atlasController?.setAccent();
+  miniTuner?.syncTheme();
   return match;
 }
 
@@ -1164,6 +1170,7 @@ function syncFavoriteIcons(uuid, isFav) {
     dom.deckFavBtn.classList.toggle('active', isFav);
     dom.deckMobileFavBtn.classList.toggle('active', isFav);
   }
+  miniTuner?.syncFavorite(uuid, isFav);
 }
 
 /* ==========================================================================
@@ -1439,6 +1446,7 @@ function updateDeckTick({ elapsedSeconds, sleepRemainingMs }) {
   } else {
     dom.deckSleepBadge.style.display = 'none';
   }
+  miniTuner?.syncTick({ elapsedSeconds, sleepRemainingMs });
 }
 
 function updateDeckUI(pState) {
@@ -1475,6 +1483,7 @@ function updateDeckUI(pState) {
     dom.deckMobileFavBtn.disabled = true;
     dom.deckMobileMoreBtn.disabled = true;
     dom.deckShareBtn.disabled = true;
+    miniTuner?.syncPlayback(pState);
     return;
   }
 
@@ -1539,6 +1548,7 @@ function updateDeckUI(pState) {
 
   syncVisibleCardStates(station.stationuuid, status);
   atlasController?.syncPlayback(pState);
+  miniTuner?.syncPlayback(pState);
 }
 
 /**
@@ -1605,6 +1615,7 @@ async function tuneSurpriseStation() {
   dom.surpriseBtn.disabled = true;
   dom.surpriseIcon.style.display = 'none';
   dom.surpriseSpinner.style.display = 'inline-block';
+  miniTuner?.setSurpriseLoading(true);
 
   try {
     const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 40);
@@ -1642,6 +1653,7 @@ async function tuneSurpriseStation() {
     dom.surpriseBtn.disabled = false;
     dom.surpriseIcon.style.display = 'block';
     dom.surpriseSpinner.style.display = 'none';
+    miniTuner?.setSurpriseLoading(false);
   }
 }
 
@@ -2362,6 +2374,10 @@ function bindEvents() {
     storage.setPref('muted', muted);
   });
 
+  dom.deckPipBtn?.addEventListener('click', () => {
+    miniTuner?.toggle();
+  });
+
   dom.sleepTimerSelect.addEventListener('change', () => {
     const mins = Number(dom.sleepTimerSelect.value);
     radioPlayer.setSleepTimer(mins);
@@ -2512,6 +2528,11 @@ function bindEvents() {
       stepQueue(1);
     } else if (e.key === 'r' || e.key === 'R') {
       tuneSurpriseStation();
+    } else if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (miniTuner) {
+        e.preventDefault();
+        miniTuner.toggle();
+      }
     }
   });
 }
@@ -3080,6 +3101,51 @@ async function init() {
     onPrev: () => stepQueue(-1),
     onNext: () => stepQueue(1),
   });
+
+  if (isDesktopPipSupported()) {
+    miniTuner = createMiniTunerController({
+      player: radioPlayer,
+      getQueueLength: () => state.queue.length,
+      isFavorite: (uuid) => storage.isFavorite(uuid),
+      isCustom: (station) => isCustomStation(station),
+      buildArtworkHtml,
+      formatElapsed,
+      countryCodeToFlag,
+      parseTags,
+      onPrev: () => stepQueue(-1),
+      onNext: () => {
+        if (state.queue.length > 1) {
+          stepQueue(1);
+        } else {
+          tuneSurpriseStation();
+        }
+      },
+      onToggleFavorite: toggleCurrentStationFavorite,
+      onSurprise: tuneSurpriseStation,
+      onVolumeChange: (val) => {
+        radioPlayer.setVolume(val, val === 0);
+        storage.setPref('volume', val);
+        storage.setPref('muted', val === 0);
+      },
+      onToggleMute: () => {
+        const muted = radioPlayer.toggleMute();
+        storage.setPref('muted', muted);
+      },
+      onOpenStateChange: (isOpen) => {
+        if (!dom.deckPipBtn) return;
+        dom.deckPipBtn.classList.toggle('is-open', isOpen);
+        dom.deckPipBtn.setAttribute('aria-pressed', isOpen ? 'true' : 'false');
+        const label = isOpen ? 'Dock Floating Mini-Tuner' : 'Pop out Floating Mini-Tuner';
+        const title = isOpen ? 'Dock Mini-Tuner (P)' : 'Pop out Mini-Tuner (P)';
+        dom.deckPipBtn.setAttribute('aria-label', label);
+        dom.deckPipBtn.setAttribute('title', title);
+      },
+      onToast: showToast,
+    });
+
+    if (dom.deckPipBtn) dom.deckPipBtn.style.display = '';
+    if (dom.kbdHintPip) dom.kbdHintPip.style.display = '';
+  }
 
   const { stationUuid } = readQueryParamsIntoState();
 
