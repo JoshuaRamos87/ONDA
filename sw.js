@@ -4,7 +4,7 @@
  * leaving live audio streams and cross-origin Radio Browser API calls untouched.
  */
 
-const CACHE_VERSION = 'onda-shell-v1.4.7';
+const CACHE_VERSION = 'onda-shell-v1.4.8';
 
 const SHELL_ASSETS = [
   './',
@@ -15,6 +15,7 @@ const SHELL_ASSETS = [
   './js/player.js',
   './js/storage.js',
   './js/pip.js',
+  './js/mobile-player.js',
   './js/app.js',
   './favicon.svg',
   './manifest.webmanifest',

@@ -9,6 +9,7 @@ import { radioApi } from './api.js';
 import { radioPlayer } from './player.js';
 import { storage, createCustomUuid, isCustomStation } from './storage.js';
 import { isDesktopPipSupported, createMiniTunerController } from './pip.js';
+import { createMobilePlayerController } from './mobile-player.js';
 
 const PAGE_SIZE = 36;
 
@@ -116,6 +117,7 @@ const state = {
 let atlasController = null;
 let atlasLoadingPromise = null;
 let miniTuner = null;
+let mobilePlayer = null;
 
 /* ==========================================================================
    DOM References
@@ -237,6 +239,9 @@ const dom = {
   volumeSlider: document.getElementById('volume-slider'),
   deckPipBtn: document.getElementById('deck-pip-btn'),
   kbdHintPip: document.getElementById('kbd-hint-pip'),
+  playerDeck: document.getElementById('player-deck'),
+  deckStation: document.querySelector('#player-deck .deck-station'),
+  mobileSheet: document.getElementById('mobile-player-sheet'),
 
   // Modals & Toast
   modal: document.getElementById('station-modal'),
@@ -1171,6 +1176,7 @@ function syncFavoriteIcons(uuid, isFav) {
     dom.deckMobileFavBtn.classList.toggle('active', isFav);
   }
   miniTuner?.syncFavorite(uuid, isFav);
+  mobilePlayer?.syncFavorite(uuid, isFav);
 }
 
 /* ==========================================================================
@@ -1447,6 +1453,7 @@ function updateDeckTick({ elapsedSeconds, sleepRemainingMs }) {
     dom.deckSleepBadge.style.display = 'none';
   }
   miniTuner?.syncTick({ elapsedSeconds, sleepRemainingMs });
+  mobilePlayer?.syncTick({ elapsedSeconds, sleepRemainingMs });
 }
 
 function updateDeckUI(pState) {
@@ -1484,6 +1491,7 @@ function updateDeckUI(pState) {
     dom.deckMobileMoreBtn.disabled = true;
     dom.deckShareBtn.disabled = true;
     miniTuner?.syncPlayback(pState);
+    mobilePlayer?.syncPlayback(pState);
     return;
   }
 
@@ -1549,6 +1557,7 @@ function updateDeckUI(pState) {
   syncVisibleCardStates(station.stationuuid, status);
   atlasController?.syncPlayback(pState);
   miniTuner?.syncPlayback(pState);
+  mobilePlayer?.syncPlayback(pState);
 }
 
 /**
@@ -1616,6 +1625,7 @@ async function tuneSurpriseStation() {
   dom.surpriseIcon.style.display = 'none';
   dom.surpriseSpinner.style.display = 'inline-block';
   miniTuner?.setSurpriseLoading(true);
+  mobilePlayer?.setSurpriseLoading(true);
 
   try {
     const candidates = await radioApi.getRandomStations(state.filters.httpsOnly, 40);
@@ -1654,6 +1664,7 @@ async function tuneSurpriseStation() {
     dom.surpriseIcon.style.display = 'block';
     dom.surpriseSpinner.style.display = 'none';
     miniTuner?.setSurpriseLoading(false);
+    mobilePlayer?.setSurpriseLoading(false);
   }
 }
 
@@ -2347,6 +2358,7 @@ function bindEvents() {
   dom.deckNextBtn.addEventListener('click', () => stepQueue(1));
 
   dom.deckTitle.addEventListener('click', () => {
+    if (window.matchMedia('(max-width: 1024px)').matches) return;
     if (radioPlayer.currentStation) openStationModal(radioPlayer.currentStation);
   });
 
@@ -2497,6 +2509,10 @@ function bindEvents() {
         closeAccentPopover();
         return;
       }
+      if (mobilePlayer?.isOpen()) {
+        mobilePlayer.close();
+        return;
+      }
     }
 
     // Keep Tab focus trapped inside any active modal and disable background shortcuts
@@ -2548,7 +2564,8 @@ function isAnyModalOpen() {
   return (
     dom.modal.classList.contains('open') ||
     dom.aboutModal.classList.contains('open') ||
-    dom.customModal.classList.contains('open')
+    dom.customModal.classList.contains('open') ||
+    Boolean(mobilePlayer?.isOpen())
   );
 }
 
@@ -3146,6 +3163,49 @@ async function init() {
     if (dom.deckPipBtn) dom.deckPipBtn.style.display = '';
     if (dom.kbdHintPip) dom.kbdHintPip.style.display = '';
   }
+
+  mobilePlayer = createMobilePlayerController({
+    deckEl: dom.playerDeck,
+    deckStationEl: dom.deckStation,
+    sheetEl: dom.mobileSheet,
+    player: radioPlayer,
+    getQueueLength: () => state.queue.length,
+    isFavorite: (uuid) => storage.isFavorite(uuid),
+    isCustom: (station) => isCustomStation(station),
+    getStationAccentColor: (station) => getStationMonogram(station).color,
+    buildArtworkHtml,
+    formatElapsed,
+    countryCodeToFlag,
+    parseTags,
+    onPrev: () => stepQueue(-1),
+    onNext: () => {
+      if (state.queue.length > 1) {
+        stepQueue(1);
+      } else {
+        tuneSurpriseStation();
+      }
+    },
+    onToggleFavorite: toggleCurrentStationFavorite,
+    onSurprise: tuneSurpriseStation,
+    onCycleSleepTimer: () => {
+      const steps = [0, 15, 30, 60];
+      const idx = steps.indexOf(radioPlayer.sleepMinutes);
+      const next = steps[(idx + 1) % steps.length];
+      radioPlayer.setSleepTimer(next);
+      showToast(next > 0 ? `Sleep timer set for ${next} minutes.` : 'Sleep timer turned off.');
+    },
+    onShare: () => {
+      if (!radioPlayer.currentStation || isCustomStation(radioPlayer.currentStation)) return;
+      copyToClipboard(getStationShareUrl(radioPlayer.currentStation), 'Direct station link copied!');
+    },
+    onOpenStationInfo: () => {
+      if (radioPlayer.currentStation) openStationModal(radioPlayer.currentStation);
+    },
+    onLockScroll: lockPageScroll,
+    onUnlockScroll: () => {
+      if (!isAnyModalOpen()) unlockPageScroll();
+    },
+  });
 
   const { stationUuid } = readQueryParamsIntoState();
 
