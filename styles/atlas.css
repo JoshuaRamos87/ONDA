@@ -268,9 +268,20 @@
   box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
+.atlas-dot.city {
+  background: var(--bg-surface);
+  border: 2px solid var(--accent);
+}
+
 .atlas-dot.hub {
   background: transparent;
   border: 1.5px dashed var(--ink-secondary);
+}
+
+.atlas-row-specs .spec-badge.city-approx {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-ring);
 }
 
 .atlas-dot.night {

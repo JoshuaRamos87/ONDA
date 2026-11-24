@@ -2,8 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COUNTRY_CENTROIDS,
+  CITY_REGION_COORDS,
   TIME_BAND_META,
   hasValidGeo,
+  normalizeLocationKey,
+  resolveFallbackGeo,
+  getStationGeo,
   normalizeLongitude,
   haversineKm,
   formatDistanceKm,
@@ -24,6 +28,73 @@ test('hasValidGeo validates coordinate ranges and rejects Null Island (0, 0)', (
   assert.equal(hasValidGeo({ geo_lat: null, geo_long: 10 }), false);
   assert.equal(hasValidGeo({ geo_lat: '', geo_long: '' }), false);
   assert.equal(hasValidGeo(null), false);
+});
+
+test('normalizeLocationKey strips diacritics, hashtags, and punctuation while keeping CJK', () => {
+  assert.equal(normalizeLocationKey('São Paulo, SP #qa'), 'sao paulo sp');
+  assert.equal(normalizeLocationKey('Tokyo-FM / Shibuya'), 'tokyo fm shibuya');
+  assert.equal(normalizeLocationKey('東京都'), '東京都');
+  assert.equal(normalizeLocationKey('  Hokaido  '), 'hokaido');
+});
+
+test('resolveFallbackGeo matches state, typos, CJK, and station name without false positives', () => {
+  // Pass 1: exact and typo state matches in JP
+  const tokyo = resolveFallbackGeo({ countrycode: 'JP', state: 'Tokyo', name: 'J-Wave' });
+  assert.equal(tokyo?.precision, 'city');
+  assert.equal(tokyo?.label, 'Tokyo');
+
+  const hokkaidoTypo = resolveFallbackGeo({ countrycode: 'JP', state: 'Hokaido #qa', name: 'FM North' });
+  assert.equal(hokkaidoTypo?.label, 'Hokkaido');
+
+  const shigaLower = resolveFallbackGeo({ countrycode: 'JP', state: 'shiga', name: 'e-radio' });
+  assert.equal(shigaLower?.label, 'Shiga');
+
+  const kanjiTokyo = resolveFallbackGeo({ countrycode: 'JP', state: '東京都渋谷区', name: 'Shibuya Cross' });
+  assert.equal(kanjiTokyo?.label, 'Tokyo');
+
+  // Longest-key-first: New Delhi beats Delhi
+  const newDelhi = resolveFallbackGeo({ countrycode: 'IN', state: 'New Delhi, India', name: 'AIR' });
+  assert.equal(newDelhi?.label, 'New Delhi');
+
+  // Pass 2: station.name fallback when state is empty
+  const osakaName = resolveFallbackGeo({ countrycode: 'JP', state: '', name: 'FM Osaka 85.1' });
+  assert.equal(osakaName?.label, 'Osaka');
+
+  // Blocklisted ambiguous words do NOT false-match in station.name, but DO match in station.state
+  assert.equal(resolveFallbackGeo({ countrycode: 'FR', state: '', name: 'Very Nice Jazz FM' }), null);
+  assert.equal(resolveFallbackGeo({ countrycode: 'FR', state: 'Nice', name: 'Radio Cote' })?.label, 'Nice');
+  assert.equal(resolveFallbackGeo({ countrycode: 'BR', state: '', name: 'Rádio Para Todos' }), null);
+  assert.equal(resolveFallbackGeo({ countrycode: 'ID', state: '', name: 'Solo Acoustic Radio' }), null);
+
+  // Country scoping prevents cross-border collisions
+  assert.equal(resolveFallbackGeo({ countrycode: 'US', state: 'Tokyo', name: 'Tokyo Hits' }), null);
+
+  // Stations with verified GPS return null from resolveFallbackGeo (exact takes precedence)
+  assert.equal(
+    resolveFallbackGeo({ countrycode: 'JP', state: 'Osaka', geo_lat: 35.68, geo_long: 139.69 }),
+    null
+  );
+});
+
+test('getStationGeo resolves Tier 1 exact GPS, Tier 2 city matches, and returns null for Tier 3', () => {
+  const exact = getStationGeo({ geo_lat: 35.68, geo_long: 139.69, state: 'Tokyo', countrycode: 'JP' });
+  assert.equal(exact?.precision, 'exact');
+  assert.equal(exact?.lat, 35.68);
+
+  const preAttached = getStationGeo({
+    _geoLat: 34.6937,
+    _geoLng: 135.5023,
+    _geoPrecision: 'city',
+    _geoLabel: 'Osaka',
+  });
+  assert.equal(preAttached?.precision, 'city');
+  assert.equal(preAttached?.label, 'Osaka');
+
+  const lazyCity = getStationGeo({ countrycode: 'KR', state: 'Busan', name: 'Busan eFM' });
+  assert.equal(lazyCity?.precision, 'city');
+  assert.equal(lazyCity?.label, 'Busan');
+
+  assert.equal(getStationGeo({ countrycode: 'JP', state: '', name: 'J-Pop Radio' }), null);
 });
 
 test('normalizeLongitude wraps longitudes cleanly into [-180, 180)', () => {
@@ -66,7 +137,13 @@ test('getSolarTimeInfo and getStationSolarTime derive expected solar time bands'
   assert.ok(nycTime);
   assert.equal(nycTime.period, 'morning');
 
-  // Wide multi-TZ country without exact GPS should return null (ambiguous timezone)
+  // City-matched station in a wide multi-TZ country (Brazil) now gets accurate solar time
+  const spStation = { countrycode: 'BR', state: 'São Paulo', name: 'Jovem Pan' };
+  const spTime = getStationSolarTime(spStation, solsticeNoonUtc);
+  assert.ok(spTime);
+  assert.equal(spTime.offsetLabel, 'UTC-3');
+
+  // Wide multi-TZ country without exact GPS or city match still returns null
   assert.equal(getStationSolarTime({ countrycode: 'US' }, solsticeNoonUtc), null);
 
   // Single-timezone country without exact GPS falls back to centroid
@@ -110,12 +187,24 @@ test('getClusterCellSize shrinks monotonically as zoom increases', () => {
   }
 });
 
-test('COUNTRY_CENTROIDS entries have valid geographic coordinates', () => {
+test('COUNTRY_CENTROIDS and CITY_REGION_COORDS entries have valid geographic coordinates', () => {
   const entries = Object.entries(COUNTRY_CENTROIDS);
   assert.ok(entries.length >= 150);
   for (const [code, [lat, lng]] of entries) {
     assert.match(code, /^[A-Z]{2}$/);
     assert.ok(lat >= -90 && lat <= 90, `${code} invalid lat ${lat}`);
     assert.ok(lng >= -180 && lng <= 180, `${code} invalid lng ${lng}`);
+  }
+
+  const cityCountries = Object.entries(CITY_REGION_COORDS);
+  assert.ok(cityCountries.length >= 25);
+  for (const [code, table] of cityCountries) {
+    assert.match(code, /^[A-Z]{2}$/);
+    for (const [key, [lat, lng, label]] of Object.entries(table)) {
+      assert.ok(key.length >= 2, `${code} key too short: ${key}`);
+      assert.ok(lat >= -90 && lat <= 90, `${code}:${key} invalid lat ${lat}`);
+      assert.ok(lng >= -180 && lng <= 180, `${code}:${key} invalid lng ${lng}`);
+      assert.ok(typeof label === 'string' && label.length > 0, `${code}:${key} missing label`);
+    }
   }
 });

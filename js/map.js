@@ -4,7 +4,7 @@
  * Loaded dynamically via import('./map.js') only when the user opens the Atlas tab.
  * Features:
  * - Dynamically injected Leaflet 1.9.4 rendered via L.canvas() for 60fps mobile performance
- * - Two-tier geographic coverage: Exact GPS-pinned station clusters + Country Hub fallbacks
+ * - Three-tier geographic coverage: Exact GPS pins, City/Region fallback pins, and Country Hubs
  * - "Near Me" geolocation with Haversine distance sorting + honest country fallback section
  * - Real-time astronomical Day/Night solar terminator + approximate local solar time bands
  * - Keyless OpenStreetMap tiles graded via CSS for Light/Dark modes + dynamic --accent styling
@@ -18,8 +18,11 @@ import {
 import {
   WIDE_MULTI_TZ_COUNTRIES,
   COUNTRY_CENTROIDS,
+  CITY_REGION_COORDS,
   TIME_BAND_META,
   hasValidGeo,
+  resolveFallbackGeo,
+  getStationGeo,
   normalizeLongitude,
   haversineKm,
   formatDistanceKm,
@@ -30,7 +33,7 @@ import {
   getClusterCellSize,
 } from './geo.js';
 
-export { hasValidGeo };
+export { hasValidGeo, getStationGeo };
 
 const LEAFLET_SOURCES = [
   {
@@ -49,6 +52,8 @@ const TILE_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>';
 
 const RADIUS_OPTIONS = [50, 150, 500, 0]; // 0 = Any distance
+const SPARSE_COUNTRY_PIN_THRESHOLD = 15;
+const COUNTRY_FALLBACK_FETCH_LIMIT = 250;
 
 /* ==========================================================================
    Dynamic Leaflet 1.9.4 Loader
@@ -243,14 +248,52 @@ export async function createAtlasController(deps) {
     return state.countries.find((c) => (c.iso_3166_1 || '').toUpperCase() === upper) || null;
   }
 
+  function enrichStationWithFallbackGeo(station) {
+    if (!station) return null;
+    if (hasValidGeo(station)) return station;
+    if (station._geoPrecision === 'city' && Number.isFinite(Number(station._geoLat))) {
+      return station;
+    }
+    const match = resolveFallbackGeo(station);
+    if (!match) return null;
+    return {
+      ...station,
+      _geoLat: match.lat,
+      _geoLng: match.lng,
+      _geoPrecision: 'city',
+      _geoLabel: match.label,
+    };
+  }
+
   function mergeGeoStations(list) {
     let added = 0;
-    for (const s of list || []) {
-      if (!hasValidGeo(s)) continue;
-      if (!state.geoStationsMap.has(s.stationuuid)) {
+    for (const raw of list || []) {
+      const geo = getStationGeo(raw);
+      if (!geo) continue;
+
+      const existing = state.geoStationsMap.get(raw.stationuuid);
+      // Never overwrite a verified Tier 1 exact GPS pin with a Tier 2 city fallback
+      if (existing && hasValidGeo(existing) && geo.precision !== 'exact') {
+        continue;
+      }
+
+      const entry =
+        geo.precision === 'exact'
+          ? raw
+          : raw._geoPrecision === 'city'
+          ? raw
+          : {
+              ...raw,
+              _geoLat: geo.lat,
+              _geoLng: geo.lng,
+              _geoPrecision: 'city',
+              _geoLabel: geo.label,
+            };
+
+      if (!existing) {
         added += 1;
       }
-      state.geoStationsMap.set(s.stationuuid, s);
+      state.geoStationsMap.set(entry.stationuuid, entry);
     }
     if (added > 0 || state.geoStations.length !== state.geoStationsMap.size) {
       state.geoStations = Array.from(state.geoStationsMap.values()).sort(
@@ -279,11 +322,14 @@ export async function createAtlasController(deps) {
   function updateLocateActiveButton() {
     if (!dom.locateActiveBtn) return;
     const current = getPlayerState()?.station;
-    const canLocate = hasValidGeo(current);
+    const geo = getStationGeo(current);
+    const canLocate = Boolean(geo);
     dom.locateActiveBtn.disabled = !canLocate;
     dom.locateActiveBtn.title = canLocate
-      ? `Fly to ${current.name}`
-      : 'Currently playing station has no GPS coordinates';
+      ? geo.precision === 'city'
+        ? `Fly to ${current.name} (~${geo.label})`
+        : `Fly to ${current.name}`
+      : 'Currently playing station has no map coordinates';
   }
 
   /* --------------------------------------------------------------------------
@@ -472,6 +518,8 @@ export async function createAtlasController(deps) {
 
   /**
    * Background-load deeper GPS-pinned stations for a single country (cached once per session).
+   * For countries with sparse GPS tagging in Radio Browser, runs a cached fallback pass and
+   * plots stations whose city/region matches CITY_REGION_COORDS.
    */
   async function hydrateCountryPins(rawCode) {
     const code = (rawCode || '').toUpperCase();
@@ -498,10 +546,35 @@ export async function createAtlasController(deps) {
       // Discard stale response if user toggled HTTPS-only mid-flight
       if (requestHttpsOnly !== state.httpsOnly) return;
 
+      const toMerge = [...pinned];
+
+      if (pinned.length < SPARSE_COUNTRY_PIN_THRESHOLD && CITY_REGION_COORDS[code]) {
+        const { stations: countryStations } = await radioApi
+          .searchStations({
+            countrycode: code,
+            httpsOnly: requestHttpsOnly,
+            order: 'clickcount',
+            reverse: true,
+            limit: COUNTRY_FALLBACK_FETCH_LIMIT,
+            cache: true,
+          })
+          .catch(() => ({ stations: [] }));
+
+        if (requestHttpsOnly !== state.httpsOnly) return;
+
+        if (countryStations.length > 0) {
+          state.countryStationsCache.set(code, countryStations);
+          for (const s of countryStations) {
+            const enriched = enrichStationWithFallbackGeo(s);
+            if (enriched) toMerge.push(enriched);
+          }
+        }
+      }
+
       state.hydratedCountries.add(code);
-      if (pinned.length > 0) {
+      if (toMerge.length > 0) {
         const beforeCount = state.geoStations.length;
-        mergeGeoStations(pinned);
+        mergeGeoStations(toMerge);
         if (state.geoStations.length !== beforeCount) {
           renderStationPins();
           updateSummaryBadge();
@@ -670,12 +743,14 @@ export async function createAtlasController(deps) {
     const accentBright = readCssVar('--accent-bright', '#FF5F3D');
     const isDark = state.theme === 'dark';
     const borderCol = isDark ? 'rgba(20, 22, 25, 0.92)' : 'rgba(255, 255, 255, 0.95)';
+    const cityFillCol = isDark ? 'rgba(24, 27, 32, 0.92)' : 'rgba(255, 255, 255, 0.94)';
 
     // Fast spatial grid bucketing
     const buckets = new Map();
     for (const s of state.geoStations) {
-      const lat = Number(s.geo_lat);
-      const lng = Number(s.geo_long);
+      const geo = getStationGeo(s);
+      if (!geo) continue;
+      const { lat, lng } = geo;
       if (state.timeBand !== 'all') {
         const solar = getSolarTimeInfo(lng, now);
         if (!solar || solar.period !== state.timeBand) continue;
@@ -686,11 +761,16 @@ export async function createAtlasController(deps) {
       const key = `${gx}:${gy}`;
       let bucket = buckets.get(key);
       if (!bucket) {
-        bucket = { sumLat: 0, sumLng: 0, stations: [] };
+        bucket = { sumLat: 0, sumLng: 0, hasExact: false, cityLabel: '', stations: [] };
         buckets.set(key, bucket);
       }
       bucket.sumLat += lat;
       bucket.sumLng += lng;
+      if (geo.precision === 'exact') {
+        bucket.hasExact = true;
+      } else if (!bucket.cityLabel && geo.label) {
+        bucket.cityLabel = geo.label;
+      }
       bucket.stations.push(s);
     }
 
@@ -699,6 +779,7 @@ export async function createAtlasController(deps) {
       const lat = bucket.sumLat / count;
       const lng = bucket.sumLng / count;
       const top = bucket.stations[0];
+      const cityOnly = !bucket.hasExact;
       const solar = getSolarTimeInfo(lng, now);
       const radius =
         count === 1 ? 4.8 : Math.min(12.5, 5.4 + Math.log2(count) * 1.65);
@@ -706,21 +787,24 @@ export async function createAtlasController(deps) {
       const marker = L.circleMarker([lat, lng], {
         renderer: state.canvasRenderer,
         radius,
-        color: borderCol,
-        weight: count > 1 ? 1.5 : 1.1,
-        fillColor: count > 1 ? accent : accentBright,
-        fillOpacity: count > 1 ? 0.88 : 0.82,
+        color: cityOnly ? accent : borderCol,
+        weight: cityOnly ? (count > 1 ? 2.1 : 1.7) : count > 1 ? 1.5 : 1.1,
+        fillColor: cityOnly ? cityFillCol : count > 1 ? accent : accentBright,
+        fillOpacity: cityOnly ? 0.92 : count > 1 ? 0.88 : 0.82,
       });
 
       const flag = countryCodeToFlag(top.countrycode);
       const clockStr = solar ? ` · ${solar.icon} ${solar.formatted}` : '';
+      const placeBase = cityOnly
+        ? [bucket.cityLabel ? `~${bucket.cityLabel}` : top.state, top.country].filter(Boolean).join(', ')
+        : [top.state, top.country].filter(Boolean).join(', ');
       const tipHtml =
         count === 1
           ? `<strong>${escapeHtml(top.name)}</strong><br>${flag} ${escapeHtml(
-              [top.state, top.country].filter(Boolean).join(', ') || 'Live Broadcast'
+              placeBase || 'Live Broadcast'
             )}${escapeHtml(clockStr)}`
           : `<strong>${flag} ${count} stations</strong><br>${escapeHtml(
-              [top.state, top.country].filter(Boolean).join(', ') || top.name
+              placeBase || top.name
             )}${escapeHtml(clockStr)}`;
 
       marker.bindTooltip(tipHtml, { direction: 'top', offset: [0, -6], opacity: 0.96 });
@@ -730,7 +814,9 @@ export async function createAtlasController(deps) {
           lat,
           lng,
           stations: bucket.stations,
-          canZoomCloser: count > 4 && zoom < 8,
+          canZoomCloser: count > 4 && zoom < 8 && !cityOnly,
+          cityOnly,
+          cityLabel: bucket.cityLabel,
         });
       });
 
@@ -744,11 +830,12 @@ export async function createAtlasController(deps) {
 
     const pState = getPlayerState();
     const station = pState?.station;
-    if (!hasValidGeo(station)) return;
+    const geo = getStationGeo(station);
+    if (!geo) return;
 
     const L = state.L;
     const accentBright = readCssVar('--accent-bright', '#FF5F3D');
-    const pos = [Number(station.geo_lat), Number(station.geo_long)];
+    const pos = [geo.lat, geo.lng];
 
     L.circleMarker(pos, {
       renderer: state.canvasRenderer,
@@ -813,7 +900,10 @@ export async function createAtlasController(deps) {
      Drawer Rendering & Actions
      -------------------------------------------------------------------------- */
 
-  function buildAtlasRowHtml(station, { distanceKm = null, badgeText = '' } = {}) {
+  function buildAtlasRowHtml(
+    station,
+    { distanceKm = null, isApproxDistance = false, badgeText = '' } = {}
+  ) {
     const pState = getPlayerState();
     const isCurrent = pState.station && pState.station.stationuuid === station.stationuuid;
     const isPlaying = isCurrent && pState.status === 'playing';
@@ -822,11 +912,24 @@ export async function createAtlasController(deps) {
     const fav = isFavorite(station.stationuuid);
 
     const flag = countryCodeToFlag(station.countrycode);
-    const loc = [station.state, station.country].filter(Boolean).join(', ') || 'Worldwide';
+    const geo = getStationGeo(station);
+    const isCityMatch = geo?.precision === 'city';
+    const loc =
+      [station.state || (isCityMatch ? geo.label : ''), station.country].filter(Boolean).join(', ') ||
+      'Worldwide';
     const solar = getStationSolarTime(station);
     const codec = (station.codec || '').toUpperCase();
     const bitrate = Number(station.bitrate) > 0 ? `${station.bitrate}k` : '';
     const isHls = Number(station.hls) === 1;
+    const distLabel =
+      distanceKm !== null
+        ? isApproxDistance
+          ? distanceKm < 1
+            ? '~1 km'
+            : `~${formatDistanceKm(distanceKm)}`
+          : formatDistanceKm(distanceKm)
+        : '';
+    const cityBadge = !badgeText && isCityMatch && geo.label ? `~${geo.label}` : '';
 
     const playOverlayInner = isLoading
       ? '<span class="spinner"></span>'
@@ -866,7 +969,8 @@ export async function createAtlasController(deps) {
             ${solar ? `<span class="atlas-solar-pill" title="Approximate local solar time (${escapeHtml(solar.offsetLabel)})">${solar.icon} ${escapeHtml(solar.formatted)}</span>` : ''}
           </div>
           <div class="atlas-row-specs">
-            ${distanceKm !== null ? `<span class="spec-badge accent">${escapeHtml(formatDistanceKm(distanceKm))}</span>` : ''}
+            ${distLabel ? `<span class="spec-badge accent" title="${isApproxDistance ? 'Approximate distance to city/region center' : 'Distance to broadcast pin'}">${escapeHtml(distLabel)}</span>` : ''}
+            ${cityBadge ? `<span class="spec-badge city-approx" title="Approximate city/region match">${escapeHtml(cityBadge)}</span>` : ''}
             ${badgeText ? `<span class="spec-badge muted">${escapeHtml(badgeText)}</span>` : ''}
             ${codec ? `<span class="spec-badge">${escapeHtml(codec)}</span>` : ''}
             ${bitrate ? `<span class="spec-badge">${escapeHtml(bitrate)}</span>` : ''}
@@ -911,7 +1015,9 @@ export async function createAtlasController(deps) {
     const now = new Date();
     const filtered = state.geoStations.filter((s) => {
       if (state.timeBand === 'all') return true;
-      const solar = getSolarTimeInfo(Number(s.geo_long), now);
+      const geo = getStationGeo(s);
+      if (!geo) return false;
+      const solar = getSolarTimeInfo(geo.lng, now);
       return solar && solar.period === state.timeBand;
     });
 
@@ -924,7 +1030,7 @@ export async function createAtlasController(deps) {
       ? `Live in ${bandMeta.label} Regions`
       : 'Explore Stations Worldwide';
     dom.drawerSubtitle.textContent =
-      'Tap any accent pin for exact city stations, any dashed ring for a full country, or hit Near Me.';
+      'Tap any solid pin or ringed city cluster for local stations, any dashed ring for a full country, or hit Near Me.';
     dom.drawerControls.innerHTML = '';
     dom.drawerBanner.style.display = 'none';
     dom.drawerBanner.innerHTML = '';
@@ -941,9 +1047,16 @@ export async function createAtlasController(deps) {
     dom.drawerList.innerHTML = featured.map((s) => buildAtlasRowHtml(s)).join('');
   }
 
-  function openClusterInDrawer({ lat, lng, stations, canZoomCloser = false }) {
+  function openClusterInDrawer({
+    lat,
+    lng,
+    stations,
+    canZoomCloser = false,
+    cityOnly = false,
+    cityLabel = '',
+  }) {
     state.drawerMode = 'cluster';
-    state.drawerContext = { lat, lng, stations, canZoomCloser };
+    state.drawerContext = { lat, lng, stations, canZoomCloser, cityOnly, cityLabel };
 
     const sorted = [...stations].sort((a, b) => (b.clickcount || 0) - (a.clickcount || 0));
     state.drawerStations = sorted;
@@ -951,17 +1064,25 @@ export async function createAtlasController(deps) {
     const top = sorted[0];
     const solar = getSolarTimeInfo(lng);
     const flag = countryCodeToFlag(top?.countrycode);
+    const topGeo = getStationGeo(top);
+    const resolvedCity = cityLabel || (topGeo?.precision === 'city' ? topGeo.label : '');
     const placeName =
-      [top?.state, top?.country].filter(Boolean).join(', ') || top?.name || 'Selected Area';
+      [top?.state || resolvedCity, top?.country].filter(Boolean).join(', ') ||
+      top?.name ||
+      'Selected Area';
 
     dom.drawerKicker.textContent = solar
       ? `${solar.icon} ${solar.formatted} · ${solar.periodLabel}`
+      : cityOnly
+      ? 'Approximate City Match'
       : 'Pinned Location';
     dom.drawerTitle.textContent =
-      sorted.length === 1 ? top.name : `${flag} ${placeName}`;
+      sorted.length === 1 ? top.name : `${flag} ${cityOnly && resolvedCity ? `~${resolvedCity}` : placeName}`;
     dom.drawerSubtitle.textContent =
       sorted.length === 1
-        ? `${flag} ${placeName} · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`
+        ? `${flag} ${cityOnly ? `Approx. ${placeName}` : placeName} · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`
+        : cityOnly
+        ? `${sorted.length} city-matched station${sorted.length === 1 ? '' : 's'} near ${resolvedCity || placeName}`
         : `${sorted.length} pinned station${sorted.length === 1 ? '' : 's'} near ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
 
     dom.drawerControls.innerHTML = canZoomCloser
@@ -981,7 +1102,7 @@ export async function createAtlasController(deps) {
     if (countryCode && countryMeta && countryMeta.stationcount > sorted.length) {
       dom.drawerBanner.style.display = 'flex';
       dom.drawerBanner.innerHTML = `
-        <span>Showing ${sorted.length} pinned here · <strong>${formatNumber(countryMeta.stationcount)}</strong> total in ${escapeHtml(countryMeta.name)}</span>
+        <span>Showing ${sorted.length} mapped here · <strong>${formatNumber(countryMeta.stationcount)}</strong> total in ${escapeHtml(countryMeta.name)}</span>
         <button type="button" class="text-link-btn" data-atlas-browse-country="${escapeHtml(countryCode)}">Browse all →</button>
       `;
     } else {
@@ -1045,7 +1166,7 @@ export async function createAtlasController(deps) {
               httpsOnly: state.httpsOnly,
               order: 'clickcount',
               reverse: true,
-              limit: 60,
+              limit: COUNTRY_FALLBACK_FETCH_LIMIT,
               cache: true,
             },
             state.drawerAbortController.signal
@@ -1062,24 +1183,61 @@ export async function createAtlasController(deps) {
             .catch(() => []),
         ]);
 
-        if (pinnedInCountry.length > 0) {
+        const toMerge = [...pinnedInCountry];
+        for (const s of allInCountry) {
+          const enriched = enrichStationWithFallbackGeo(s);
+          if (enriched) toMerge.push(enriched);
+        }
+
+        if (toMerge.length > 0) {
           state.hydratedCountries.add(code);
-          mergeGeoStations(pinnedInCountry);
-          renderStationPins();
-          updateSummaryBadge();
+          const beforeCount = state.geoStations.length;
+          mergeGeoStations(toMerge);
+          if (state.geoStations.length !== beforeCount) {
+            renderStationPins();
+            updateSummaryBadge();
+          }
         }
         countryStations = allInCountry;
         state.countryStationsCache.set(code, countryStations);
+      } else {
+        // Ensure cached country stations also feed city-matched pins onto the map
+        const fallbackBatch = [];
+        for (const s of countryStations) {
+          const enriched = enrichStationWithFallbackGeo(s);
+          if (enriched) fallbackBatch.push(enriched);
+        }
+        if (fallbackBatch.length > 0) {
+          const beforeCount = state.geoStations.length;
+          mergeGeoStations(fallbackBatch);
+          if (state.geoStations.length !== beforeCount) {
+            renderStationPins();
+            updateSummaryBadge();
+          }
+        }
       }
 
-      state.drawerStations = countryStations;
-      const pinnedCount = countryStations.filter(hasValidGeo).length;
-      const unpinnedCount = countryStations.length - pinnedCount;
+      const displayList = countryStations.slice(0, 60);
+      state.drawerStations = displayList;
+
+      let exactCount = 0;
+      let cityCount = 0;
+      for (const s of displayList) {
+        const g = getStationGeo(s);
+        if (g?.precision === 'exact') exactCount += 1;
+        else if (g?.precision === 'city') cityCount += 1;
+      }
+      const unpinnedCount = displayList.length - exactCount - cityCount;
       const totalReported = meta?.stationcount || countryStations.length;
 
-      dom.drawerSubtitle.textContent = `Top ${countryStations.length} of ${formatNumber(totalReported)} stations (${pinnedCount} pinned · ${unpinnedCount} country fallback)`;
+      const breakdown = [];
+      if (exactCount > 0) breakdown.push(`${exactCount} exact`);
+      if (cityCount > 0) breakdown.push(`${cityCount} city match`);
+      if (unpinnedCount > 0) breakdown.push(`${unpinnedCount} country fallback`);
 
-      if (countryStations.length === 0) {
+      dom.drawerSubtitle.textContent = `Top ${displayList.length} of ${formatNumber(totalReported)} stations${breakdown.length ? ` (${breakdown.join(' · ')})` : ''}`;
+
+      if (displayList.length === 0) {
         dom.drawerList.innerHTML = `
           <div class="atlas-empty">
             <p>No ${state.httpsOnly ? 'HTTPS ' : ''}stations found in ${escapeHtml(displayName)}.</p>
@@ -1088,12 +1246,13 @@ export async function createAtlasController(deps) {
         return;
       }
 
-      dom.drawerList.innerHTML = countryStations
-        .map((s) =>
-          buildAtlasRowHtml(s, {
-            badgeText: hasValidGeo(s) ? '' : 'Country match',
-          })
-        )
+      dom.drawerList.innerHTML = displayList
+        .map((s) => {
+          const g = getStationGeo(s);
+          return buildAtlasRowHtml(s, {
+            badgeText: g ? '' : 'Country match',
+          });
+        })
         .join('');
     } catch (err) {
       if (err && err.name === 'AbortError') return;
@@ -1107,12 +1266,14 @@ export async function createAtlasController(deps) {
   }
 
   function inferNearestCountryCode(lat, lng) {
-    // 1. Prefer the country of the closest verified pinned station within 350 km
+    // 1. Prefer the country of the closest mapped station within 350 km
     let bestStationDist = 350;
     let bestCode = '';
     for (const s of state.geoStations) {
       if (!s.countrycode) continue;
-      const d = haversineKm(lat, lng, Number(s.geo_lat), Number(s.geo_long));
+      const geo = getStationGeo(s);
+      if (!geo) continue;
+      const d = haversineKm(lat, lng, geo.lat, geo.lng);
       if (d < bestStationDist) {
         bestStationDist = d;
         bestCode = s.countrycode.toUpperCase();
@@ -1141,26 +1302,32 @@ export async function createAtlasController(deps) {
     const countryName = countryMeta?.name || countryCode || 'Your Country';
     const solar = getSolarTimeInfo(lng);
 
-    // Compute exact Haversine distance across all merged pinned stations
-    const pinnedWithDist = state.geoStations
-      .map((s) => ({
+    // Compute Haversine distance across exact GPS and city-matched stations
+    const pinnedWithDist = [];
+    for (const s of state.geoStations) {
+      const geo = getStationGeo(s);
+      if (!geo) continue;
+      const distanceKm = haversineKm(lat, lng, geo.lat, geo.lng);
+      if (radius > 0 && distanceKm > radius) continue;
+      pinnedWithDist.push({
         station: s,
-        distanceKm: haversineKm(lat, lng, Number(s.geo_lat), Number(s.geo_long)),
-      }))
-      .filter((entry) => radius === 0 || entry.distanceKm <= radius)
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, 36);
+        distanceKm,
+        isApproxDistance: geo.precision === 'city',
+      });
+    }
+    pinnedWithDist.sort((a, b) => a.distanceKm - b.distanceKm);
+    const nearbyList = pinnedWithDist.slice(0, 36);
 
-    const pinnedUuids = new Set(pinnedWithDist.map((e) => e.station.stationuuid));
-    // Section 2: Unpinned / additional stations in the same country (honest country fallback!)
+    const pinnedUuids = new Set(nearbyList.map((e) => e.station.stationuuid));
+    // Section 2: Unlocated stations in the same country (honest country fallback)
     const countryFallback = countryStations
-      .filter((s) => !pinnedUuids.has(s.stationuuid) && !hasValidGeo(s))
+      .filter((s) => !pinnedUuids.has(s.stationuuid) && !getStationGeo(s))
       .slice(0, 24);
 
     state.drawerMode = 'nearme';
     state.drawerContext = { countryStations };
     state.drawerStations = [
-      ...pinnedWithDist.map((e) => e.station),
+      ...nearbyList.map((e) => e.station),
       ...countryFallback,
     ];
 
@@ -1173,8 +1340,8 @@ export async function createAtlasController(deps) {
       : 'Nearest Broadcasts';
     dom.drawerSubtitle.textContent =
       radius > 0
-        ? `${pinnedWithDist.length} pinned within ${radius} km · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`
-        : `${pinnedWithDist.length} closest pinned stations · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
+        ? `${nearbyList.length} mapped within ${radius} km · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`
+        : `${nearbyList.length} closest mapped stations · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
 
     dom.drawerControls.innerHTML = `
       <div class="atlas-radius-pills" role="group" aria-label="Search radius">
@@ -1211,17 +1378,19 @@ export async function createAtlasController(deps) {
 
     const parts = [];
 
-    if (pinnedWithDist.length > 0) {
-      parts.push(`<div class="atlas-section-label">Nearest Pinned Stations</div>`);
+    if (nearbyList.length > 0) {
+      parts.push(`<div class="atlas-section-label">Nearest Stations</div>`);
       parts.push(
-        pinnedWithDist
-          .map(({ station, distanceKm }) => buildAtlasRowHtml(station, { distanceKm }))
+        nearbyList
+          .map(({ station, distanceKm, isApproxDistance }) =>
+            buildAtlasRowHtml(station, { distanceKm, isApproxDistance })
+          )
           .join('')
       );
     } else {
       parts.push(`
         <div class="atlas-empty compact">
-          <p>No GPS-pinned stations found within ${radius} km. Try widening the radius to 500 km or Any.</p>
+          <p>No mapped stations found within ${radius} km. Try widening the radius to 500 km or Any.</p>
         </div>
       `);
     }
@@ -1282,19 +1451,28 @@ export async function createAtlasController(deps) {
             httpsOnly: state.httpsOnly,
             order: 'clickcount',
             reverse: true,
-            limit: 50,
+            limit: COUNTRY_FALLBACK_FETCH_LIMIT,
             cache: true,
           })
           .catch(() => ({ stations: [] })),
       ]);
 
-      if (deepPinned.length > 0) {
-        state.hydratedCountries.add(code);
-        mergeGeoStations(deepPinned);
-        renderStationPins();
-        updateSummaryBadge();
-      }
       countryStations = allCountryRes.stations || [];
+      const toMerge = [...deepPinned];
+      for (const s of countryStations) {
+        const enriched = enrichStationWithFallbackGeo(s);
+        if (enriched) toMerge.push(enriched);
+      }
+
+      if (toMerge.length > 0) {
+        state.hydratedCountries.add(code);
+        const beforeCount = state.geoStations.length;
+        mergeGeoStations(toMerge);
+        if (state.geoStations.length !== beforeCount) {
+          renderStationPins();
+          updateSummaryBadge();
+        }
+      }
       if (countryStations.length > 0) {
         state.countryStationsCache.set(code, countryStations);
       }
@@ -1351,33 +1529,32 @@ export async function createAtlasController(deps) {
     const center = state.map.getCenter();
     const now = new Date();
 
-    const inView = state.geoStations
-      .filter((s) => {
-        const lat = Number(s.geo_lat);
-        const lng = Number(s.geo_long);
-        if (!bounds.contains([lat, lng])) return false;
-        if (state.timeBand !== 'all') {
-          const solar = getSolarTimeInfo(lng, now);
-          if (!solar || solar.period !== state.timeBand) return false;
-        }
-        return true;
-      })
-      .map((s) => ({
+    const inView = [];
+    for (const s of state.geoStations) {
+      const geo = getStationGeo(s);
+      if (!geo) continue;
+      if (!bounds.contains([geo.lat, geo.lng])) continue;
+      if (state.timeBand !== 'all') {
+        const solar = getSolarTimeInfo(geo.lng, now);
+        if (!solar || solar.period !== state.timeBand) continue;
+      }
+      inView.push({
         station: s,
-        distanceKm: haversineKm(center.lat, center.lng, Number(s.geo_lat), Number(s.geo_long)),
-      }))
-      .sort((a, b) => (b.station.clickcount || 0) - (a.station.clickcount || 0))
-      .slice(0, 40);
+        distanceKm: haversineKm(center.lat, center.lng, geo.lat, geo.lng),
+      });
+    }
+    inView.sort((a, b) => (b.station.clickcount || 0) - (a.station.clickcount || 0));
+    const visibleList = inView.slice(0, 40);
 
     state.drawerMode = 'inview';
     state.drawerContext = null;
-    state.drawerStations = inView.map((e) => e.station);
+    state.drawerStations = visibleList.map((e) => e.station);
 
     const solar = getSolarTimeInfo(center.lng, now);
     dom.drawerKicker.textContent = solar
       ? `In Map View · ${solar.icon} ${solar.formatted}`
       : 'In Map View';
-    dom.drawerTitle.textContent = `${inView.length} Station${inView.length === 1 ? '' : 's'} Visible`;
+    dom.drawerTitle.textContent = `${visibleList.length} Station${visibleList.length === 1 ? '' : 's'} Visible`;
     dom.drawerSubtitle.textContent = `Centered near ${center.lat.toFixed(1)}°, ${center.lng.toFixed(1)}°`;
     dom.drawerControls.innerHTML = '';
 
@@ -1394,16 +1571,16 @@ export async function createAtlasController(deps) {
       dom.drawerBanner.innerHTML = '';
     }
 
-    if (inView.length === 0) {
+    if (visibleList.length === 0) {
       dom.drawerList.innerHTML = `
         <div class="atlas-empty">
-          <p>No pinned stations inside this map view. Zoom out or tap a Country Hub to browse unpinned stations.</p>
+          <p>No mapped stations inside this map view. Zoom out or tap a Country Hub to browse unpinned stations.</p>
         </div>
       `;
       return;
     }
 
-    dom.drawerList.innerHTML = inView
+    dom.drawerList.innerHTML = visibleList
       .map(({ station }) => buildAtlasRowHtml(station))
       .join('');
   }
@@ -1455,26 +1632,31 @@ export async function createAtlasController(deps) {
       });
     }
 
-    // 2. Matching Cities / States among currently loaded pinned stations
+    // 2. Matching Cities / States among currently loaded mapped stations
     if (q.length >= 2) {
       const regionBuckets = new Map();
       for (const s of state.geoStations) {
-        if (!s.state || !s.state.toLowerCase().includes(q)) continue;
-        const key = `${s.state.toLowerCase()}|${s.countrycode || ''}`;
+        const geo = getStationGeo(s);
+        if (!geo) continue;
+        const regionLabel = s.state || (geo.precision === 'city' ? geo.label : '');
+        if (!regionLabel || !regionLabel.toLowerCase().includes(q)) continue;
+        const key = `${regionLabel.toLowerCase()}|${s.countrycode || ''}`;
         let b = regionBuckets.get(key);
         if (!b) {
           b = {
-            stateName: s.state,
+            stateName: regionLabel,
             country: s.country,
             countrycode: s.countrycode,
             sumLat: 0,
             sumLng: 0,
+            hasExact: false,
             stations: [],
           };
           regionBuckets.set(key, b);
         }
-        b.sumLat += Number(s.geo_lat);
-        b.sumLng += Number(s.geo_long);
+        b.sumLat += geo.lat;
+        b.sumLng += geo.lng;
+        if (geo.precision === 'exact') b.hasExact = true;
         b.stations.push(s);
       }
 
@@ -1489,24 +1671,27 @@ export async function createAtlasController(deps) {
           lng: r.sumLng / r.stations.length,
           countrycode: r.countrycode,
           stations: r.stations,
+          cityOnly: !r.hasExact,
+          cityLabel: r.stateName,
           kind: 'Region',
           label: `${countryCodeToFlag(r.countrycode)} ${r.stateName}${r.country ? `, ${r.country}` : ''}`,
-          meta: `${r.stations.length} pinned`,
+          meta: `${r.stations.length} mapped`,
         });
       }
 
-      // 3. Matching pinned stations by name
+      // 3. Matching mapped stations by name
       const stationMatches = state.geoStations
         .filter((s) => s.name && s.name.toLowerCase().includes(q))
         .slice(0, 3);
 
       for (const s of stationMatches) {
+        const g = getStationGeo(s);
         items.push({
           type: 'station',
           station: s,
           kind: 'Station',
           label: `${countryCodeToFlag(s.countrycode)} ${s.name}`,
-          meta: s.state || s.country || 'Pinned',
+          meta: s.state || (g?.precision === 'city' ? `~${g.label}` : s.country || 'Pinned'),
         });
       }
 
@@ -1515,7 +1700,7 @@ export async function createAtlasController(deps) {
         type: 'remote',
         query: rawQuery.trim(),
         kind: 'Search',
-        label: `Find pinned stations for "${rawQuery.trim()}"`,
+        label: `Find mapped stations for "${rawQuery.trim()}"`,
         meta: 'Enter ↵',
       });
     }
@@ -1557,11 +1742,10 @@ export async function createAtlasController(deps) {
         radioApi
           .searchStations({
             state: q,
-            hasGeoInfo: true,
             httpsOnly: state.httpsOnly,
             order: 'clickcount',
             reverse: true,
-            limit: 30,
+            limit: 40,
           })
           .catch(() => ({ stations: [] })),
         radioApi
@@ -1579,13 +1763,15 @@ export async function createAtlasController(deps) {
       const merged = [];
       const seen = new Set();
       for (const s of [...(byState.stations || []), ...(byName.stations || [])]) {
-        if (!hasValidGeo(s) || seen.has(s.stationuuid)) continue;
+        if (seen.has(s.stationuuid)) continue;
+        const enriched = enrichStationWithFallbackGeo(s);
+        if (!enriched) continue;
         seen.add(s.stationuuid);
-        merged.push(s);
+        merged.push(enriched);
       }
 
       if (merged.length === 0) {
-        showToast(`No GPS-pinned stations found matching "${q}". Try a country name.`);
+        showToast(`No mapped stations found matching "${q}". Try a country name.`);
         return;
       }
 
@@ -1594,17 +1780,21 @@ export async function createAtlasController(deps) {
       updateSummaryBadge();
 
       const top = merged[0];
-      const lat = Number(top.geo_lat);
-      const lng = Number(top.geo_long);
-      if (state.map) {
-        state.map.flyTo([lat, lng], merged.length === 1 ? 8 : 6, { duration: 0.85 });
+      const topGeo = getStationGeo(top);
+      const cityOnly = merged.every((s) => getStationGeo(s)?.precision === 'city');
+      if (state.map && topGeo) {
+        state.map.flyTo([topGeo.lat, topGeo.lng], merged.length === 1 ? 8 : 6, { duration: 0.85 });
       }
-      openClusterInDrawer({
-        lat,
-        lng,
-        stations: merged,
-        canZoomCloser: false,
-      });
+      if (topGeo) {
+        openClusterInDrawer({
+          lat: topGeo.lat,
+          lng: topGeo.lng,
+          stations: merged,
+          canZoomCloser: false,
+          cityOnly,
+          cityLabel: topGeo.label || q,
+        });
+      }
       if (top.countrycode) {
         hydrateCountryPins(top.countrycode);
       }
@@ -1629,6 +1819,8 @@ export async function createAtlasController(deps) {
         lng: item.lng,
         stations: item.stations,
         canZoomCloser: false,
+        cityOnly: Boolean(item.cityOnly),
+        cityLabel: item.cityLabel || '',
       });
       if (item.countrycode) hydrateCountryPins(item.countrycode);
     } else if (item.type === 'station') {
@@ -1645,19 +1837,23 @@ export async function createAtlasController(deps) {
     }
     if (!state.map) return;
 
-    if (hasValidGeo(station)) {
-      mergeGeoStations([station]);
+    const enriched = enrichStationWithFallbackGeo(station);
+    const geo = getStationGeo(enriched || station);
+
+    if (geo) {
+      const targetStation = enriched || station;
+      mergeGeoStations([targetStation]);
       renderStationPins();
       updateSummaryBadge();
 
-      const lat = Number(station.geo_lat);
-      const lng = Number(station.geo_long);
-      state.map.flyTo([lat, lng], Math.max(state.map.getZoom(), 8), { duration: 0.85 });
+      state.map.flyTo([geo.lat, geo.lng], Math.max(state.map.getZoom(), 8), { duration: 0.85 });
       openClusterInDrawer({
-        lat,
-        lng,
-        stations: [station],
+        lat: geo.lat,
+        lng: geo.lng,
+        stations: [targetStation],
         canZoomCloser: false,
+        cityOnly: geo.precision === 'city',
+        cityLabel: geo.label,
       });
       if (station.countrycode) {
         hydrateCountryPins(station.countrycode);
@@ -1680,8 +1876,8 @@ export async function createAtlasController(deps) {
 
     dom.locateActiveBtn?.addEventListener('click', () => {
       const current = getPlayerState()?.station;
-      if (!hasValidGeo(current) || !state.map) {
-        showToast('Current station has no GPS coordinates.');
+      if (!getStationGeo(current) || !state.map) {
+        showToast('Current station has no map coordinates.');
         return;
       }
       focusStationOnMap(current);
