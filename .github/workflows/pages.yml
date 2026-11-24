@@ -1,7 +1,9 @@
-name: Deploy Static Site to GitHub Pages
+name: Test & Deploy Static Site to GitHub Pages
 
 on:
   push:
+    branches: ["main", "master"]
+  pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
 
@@ -11,11 +13,25 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || 'pages' }}
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run ONDA test suite
+        run: node --test tests/*.test.mjs
+
   build:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,6 +45,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
