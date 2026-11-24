@@ -40,8 +40,10 @@ export function createMobilePlayerController(deps) {
   let openState = false;
   let surpriseLoading = false;
   let suppressClickUntil = 0;
+  let lastFocusedEl = null;
 
   const dom = {
+    innerEl: sheetEl.querySelector('.mps-inner'),
     closeBtn: document.getElementById('mps-close-btn'),
     moreBtn: document.getElementById('mps-more-btn'),
     onAir: document.getElementById('mps-on-air'),
@@ -87,26 +89,54 @@ export function createMobilePlayerController(deps) {
     sheetEl.style.opacity = '';
   }
 
-  function open() {
+  /**
+   * Re-enable CSS transition while preserving the dragged inline position for one layout
+   * flush so open/close/snap-back smoothly animates from the finger's release point.
+   */
+  function finishDragTransition(nextAction) {
+    sheetEl.classList.remove('dragging');
+    void sheetEl.offsetHeight;
+    sheetEl.style.transform = '';
+    sheetEl.style.opacity = '';
+    if (typeof nextAction === 'function') {
+      nextAction();
+    }
+  }
+
+  function open({ preserveTransition = false } = {}) {
     if (!mobileMq.matches || !deps.player.currentStation) return;
-    clearDragStyles();
+    if (!preserveTransition) {
+      clearDragStyles();
+    }
     if (!openState) {
+      lastFocusedEl = document.activeElement;
       openState = true;
       sheetEl.classList.add('open');
       sheetEl.setAttribute('aria-hidden', 'false');
       deps.onLockScroll?.();
+      dom.closeBtn?.focus({ preventScroll: true });
     }
     syncPlayback(deps.player.getState());
     setSurpriseLoading(surpriseLoading);
   }
 
-  function close() {
-    clearDragStyles();
+  function close({ preserveTransition = false } = {}) {
+    if (!preserveTransition) {
+      clearDragStyles();
+    }
     if (!openState) return;
     openState = false;
     sheetEl.classList.remove('open');
     sheetEl.setAttribute('aria-hidden', 'true');
     deps.onUnlockScroll?.();
+    if (
+      lastFocusedEl &&
+      lastFocusedEl.isConnected &&
+      typeof lastFocusedEl.focus === 'function'
+    ) {
+      lastFocusedEl.focus({ preventScroll: true });
+    }
+    lastFocusedEl = null;
   }
 
   // Collapse automatically if viewport widens to desktop
@@ -138,6 +168,7 @@ export function createMobilePlayerController(deps) {
         lastY: touch.clientY,
         lastTime: performance.now(),
         velocityY: 0,
+        startedOnControl: Boolean(e.target.closest('button, a, input, select')),
         locked: false,
         aborted: false,
       };
@@ -154,7 +185,8 @@ export function createMobilePlayerController(deps) {
       const dy = touch.clientY - deckDrag.startY;
 
       if (!deckDrag.locked) {
-        if (dy < -8 && Math.abs(dy) > Math.abs(dx) * 1.2) {
+        const lockThreshold = deckDrag.startedOnControl ? -22 : -8;
+        if (dy < lockThreshold && Math.abs(dy) > Math.abs(dx) * 1.2) {
           deckDrag.locked = true;
           sheetEl.classList.add('dragging');
         } else if (Math.abs(dx) > 10 || dy > 10) {
@@ -189,10 +221,11 @@ export function createMobilePlayerController(deps) {
     suppressClickUntil = Date.now() + 300;
     const endY = e.changedTouches?.[0]?.clientY ?? drag.lastY;
     const dy = endY - drag.startY;
-    clearDragStyles();
 
     if (-dy >= 65 || drag.velocityY < -0.45) {
-      open();
+      finishDragTransition(() => open({ preserveTransition: true }));
+    } else {
+      finishDragTransition(null);
     }
   }
 
@@ -201,7 +234,7 @@ export function createMobilePlayerController(deps) {
     if (!deckDrag) return;
     const wasLocked = deckDrag.locked;
     deckDrag = null;
-    if (wasLocked) clearDragStyles();
+    if (wasLocked) finishDragTransition(null);
   }, { passive: true });
 
   // Tap station info or top swipe handle on mobile deck to expand
@@ -222,6 +255,7 @@ export function createMobilePlayerController(deps) {
     (e) => {
       if (!openState || e.touches.length !== 1) return;
       if (e.target.closest('.mps-action-pills')) return;
+      if (dom.innerEl && dom.innerEl.scrollTop > 0) return;
       const touch = e.touches[0];
       sheetDrag = {
         startX: touch.clientX,
@@ -279,10 +313,11 @@ export function createMobilePlayerController(deps) {
 
     const endY = e.changedTouches?.[0]?.clientY ?? drag.lastY;
     const dy = endY - drag.startY;
-    clearDragStyles();
 
     if (dy >= 85 || drag.velocityY > 0.45) {
-      close();
+      finishDragTransition(() => close({ preserveTransition: true }));
+    } else {
+      finishDragTransition(null);
     }
   }
 
@@ -291,7 +326,7 @@ export function createMobilePlayerController(deps) {
     if (!sheetDrag) return;
     const wasLocked = sheetDrag.locked;
     sheetDrag = null;
-    if (wasLocked) clearDragStyles();
+    if (wasLocked) finishDragTransition(null);
   }, { passive: true });
 
   // Button bindings inside sheet
@@ -431,7 +466,13 @@ export function createMobilePlayerController(deps) {
 
     if (dom.playBtn) dom.playBtn.disabled = false;
     if (dom.prevBtn) dom.prevBtn.disabled = queueLen < 2;
-    if (dom.nextBtn) dom.nextBtn.disabled = queueLen < 2;
+    if (dom.nextBtn) {
+      dom.nextBtn.disabled = queueLen < 2 && surpriseLoading;
+      dom.nextBtn.setAttribute(
+        'aria-label',
+        queueLen < 2 ? 'Next random station' : 'Next station'
+      );
+    }
     if (dom.favBtn) dom.favBtn.disabled = false;
     if (dom.shareBtn) dom.shareBtn.disabled = custom;
 
@@ -484,6 +525,10 @@ export function createMobilePlayerController(deps) {
   function setSurpriseLoading(loading) {
     surpriseLoading = Boolean(loading);
     if (dom.surpriseBtn) dom.surpriseBtn.disabled = surpriseLoading;
+    if (dom.nextBtn && deps.player.currentStation) {
+      const queueLen = Number(deps.getQueueLength?.()) || 0;
+      dom.nextBtn.disabled = queueLen < 2 && surpriseLoading;
+    }
     if (dom.surpriseIcon) dom.surpriseIcon.style.display = surpriseLoading ? 'none' : 'block';
     if (dom.surpriseSpinner) {
       dom.surpriseSpinner.style.display = surpriseLoading ? 'inline-block' : 'none';

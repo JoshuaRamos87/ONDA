@@ -1782,6 +1782,7 @@ function openStationModal(station) {
 
   document.getElementById('modal-atlas-btn')?.addEventListener('click', () => {
     closeStationModal();
+    mobilePlayer?.close();
     switchView('atlas', { pushHistory: true });
     ensureAtlasMounted().then((ctrl) => {
       if (state.view === 'atlas') {
@@ -2423,6 +2424,7 @@ function bindEvents() {
       state.filters.tag = tagBtn.dataset.modalTag;
       state.activePreset = null;
       closeStationModal();
+      mobilePlayer?.close();
       switchView('discover', { pushHistory: false });
       syncControlsFromState();
       fetchStations({ append: false, pushHistory: true });
@@ -2470,6 +2472,9 @@ function bindEvents() {
 
   // Browser Back / Forward navigation support
   window.addEventListener('popstate', () => {
+    if (mobilePlayer?.isOpen()) {
+      mobilePlayer.close();
+    }
     readQueryParamsIntoState();
     switchView(state.view, { pushHistory: false });
     syncControlsFromState();
@@ -2573,10 +2578,13 @@ function getActiveModal() {
   if (dom.customModal.classList.contains('open')) return dom.customModal;
   if (dom.aboutModal.classList.contains('open')) return dom.aboutModal;
   if (dom.modal.classList.contains('open')) return dom.modal;
+  if (mobilePlayer?.isOpen()) return dom.mobileSheet;
   return null;
 }
 
 function lockPageScroll() {
+  hideSearchSuggestions();
+  closeAccentPopover();
   if (pageScrollLocked) return;
   lockedScrollY = window.scrollY || window.pageYOffset || 0;
   const scrollbarGap = window.innerWidth - document.documentElement.clientWidth;
@@ -2584,6 +2592,7 @@ function lockPageScroll() {
   document.documentElement.classList.add('modal-open');
   document.body.classList.add('modal-open');
   document.body.style.top = `-${lockedScrollY}px`;
+  document.body.style.setProperty('--locked-scroll-y', `${lockedScrollY}px`);
   if (scrollbarGap > 0) {
     document.body.style.paddingRight = `${scrollbarGap}px`;
   }
@@ -2595,6 +2604,7 @@ function unlockPageScroll() {
   document.documentElement.classList.remove('modal-open');
   document.body.classList.remove('modal-open');
   document.body.style.top = '';
+  document.body.style.removeProperty('--locked-scroll-y');
   document.body.style.paddingRight = '';
   pageScrollLocked = false;
   window.scrollTo({ top: lockedScrollY, behavior: 'instant' });

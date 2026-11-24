@@ -2104,6 +2104,22 @@ img {
    Responsive Breakpoints
    ========================================================================== */
 
+@media (max-width: 1240px) and (min-width: 1121px) {
+  .header-inner {
+    gap: 12px;
+    padding: 0 18px;
+  }
+
+  .nav-tab {
+    padding: 7px 10px;
+    font-size: 0.84rem;
+  }
+
+  .btn-tune {
+    padding: 0 12px;
+  }
+}
+
 @media (max-width: 1120px) {
   .main-nav {
     display: none;
@@ -2303,6 +2319,13 @@ body.modal-open {
   right: 0;
   width: 100%;
   overscroll-behavior: none;
+}
+
+/* Keep sticky header visually anchored at viewport top while body is shifted by -scrollY */
+body.modal-open .site-header {
+  position: relative;
+  top: auto;
+  transform: translateY(var(--locked-scroll-y, 0px));
 }
 
 .deck-mobile-only {
@@ -3466,7 +3489,7 @@ body.modal-open {
   .player-deck.has-station .deck-swipe-handle {
     display: flex;
     justify-content: center;
-    padding: 5px 0 0;
+    padding: 7px 0 2px;
     cursor: pointer;
   }
 
@@ -3997,6 +4020,40 @@ body.modal-open {
 
   .mps-transport-core {
     gap: 14px;
+  }
+}
+
+@media (max-width: 1024px) and (max-height: 540px) {
+  .mps-inner {
+    overflow-y: auto;
+    touch-action: pan-x pan-y;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: calc(env(safe-area-inset-top, 0px) + 6px) 20px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  }
+
+  .mps-art-stage {
+    flex: 0 0 auto;
+    padding: 0;
+  }
+
+  .mps-art {
+    width: min(124px, 26dvh);
+    border-radius: 14px;
+  }
+
+  .mps-art .station-monogram {
+    font-size: 2rem;
+  }
+
+  .mps-play-btn {
+    width: 52px;
+    height: 52px;
+  }
+
+  .mps-ctrl-btn {
+    width: 40px;
+    height: 40px;
   }
 }
 
