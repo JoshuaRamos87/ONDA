@@ -114,13 +114,14 @@ export function createMobilePlayerController(deps) {
       sheetEl.classList.add('open');
       sheetEl.setAttribute('aria-hidden', 'false');
       deps.onLockScroll?.();
+      deps.onOpenHistory?.();
       dom.closeBtn?.focus({ preventScroll: true });
     }
     syncPlayback(deps.player.getState());
     setSurpriseLoading(surpriseLoading);
   }
 
-  function close({ preserveTransition = false } = {}) {
+  function close({ preserveTransition = false, fromPopstate = false, skipHistoryBack = false } = {}) {
     if (!preserveTransition) {
       clearDragStyles();
     }
@@ -129,6 +130,7 @@ export function createMobilePlayerController(deps) {
     sheetEl.classList.remove('open');
     sheetEl.setAttribute('aria-hidden', 'true');
     deps.onUnlockScroll?.();
+    deps.onCloseHistory?.({ fromPopstate, skipHistoryBack });
     if (
       lastFocusedEl &&
       lastFocusedEl.isConnected &&

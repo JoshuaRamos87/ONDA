@@ -704,6 +704,13 @@ export function createMiniTunerController(deps) {
       } else if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         deps.onSurprise?.();
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const pState = deps.player.getState();
+        const baseVol = pState.muted ? 0 : Number(pState.volume) || 0;
+        const delta = e.key === 'ArrowUp' ? 0.05 : -0.05;
+        const nextVol = Math.round(Math.max(0, Math.min(1, baseVol + delta)) * 100) / 100;
+        deps.onVolumeChange?.(nextVol);
       }
     });
 
@@ -893,7 +900,15 @@ export function createMiniTunerController(deps) {
 
     pipDom.playBtn.disabled = false;
     pipDom.prevBtn.disabled = queueLen < 2;
-    pipDom.nextBtn.disabled = queueLen < 2;
+    pipDom.nextBtn.disabled = queueLen < 2 && surpriseLoading;
+    pipDom.nextBtn.setAttribute(
+      'aria-label',
+      queueLen < 2 ? 'Next random station' : 'Next station'
+    );
+    pipDom.nextBtn.setAttribute(
+      'title',
+      queueLen < 2 ? 'Next random station (])' : 'Next station (])'
+    );
     pipDom.favBtn.disabled = false;
 
     if (pipDom.art.dataset.uuid !== station.stationuuid) {
@@ -954,6 +969,10 @@ export function createMiniTunerController(deps) {
     surpriseLoading = Boolean(loading);
     if (!isOpen() || !pipDom) return;
     pipDom.surpriseBtn.disabled = surpriseLoading;
+    if (pipDom.nextBtn && deps.player.currentStation) {
+      const queueLen = Number(deps.getQueueLength?.()) || 0;
+      pipDom.nextBtn.disabled = queueLen < 2 && surpriseLoading;
+    }
     pipDom.surpriseIcon.style.display = surpriseLoading ? 'none' : 'block';
     pipDom.surpriseSpinner.style.display = surpriseLoading ? 'inline-block' : 'none';
   }

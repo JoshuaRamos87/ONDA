@@ -118,6 +118,8 @@ let atlasController = null;
 let atlasLoadingPromise = null;
 let miniTuner = null;
 let mobilePlayer = null;
+let sheetHistoryPushed = false;
+let ignoreNextSheetPopstate = 0;
 
 /* ==========================================================================
    DOM References
@@ -1781,9 +1783,13 @@ function openStationModal(station) {
   dom.modalCloseBtn.focus();
 
   document.getElementById('modal-atlas-btn')?.addEventListener('click', () => {
+    const wasSheetOpen = Boolean(mobilePlayer?.isOpen());
     closeStationModal();
-    mobilePlayer?.close();
-    switchView('atlas', { pushHistory: true });
+    mobilePlayer?.close({ skipHistoryBack: true });
+    switchView('atlas', { pushHistory: !wasSheetOpen });
+    if (wasSheetOpen) {
+      syncHistory({ push: false });
+    }
     ensureAtlasMounted().then((ctrl) => {
       if (state.view === 'atlas') {
         ctrl?.focusStation(station);
@@ -2421,13 +2427,17 @@ function bindEvents() {
     }
     const tagBtn = e.target.closest('[data-modal-tag]');
     if (tagBtn) {
+      const wasSheetOpen = Boolean(mobilePlayer?.isOpen());
       state.filters.tag = tagBtn.dataset.modalTag;
       state.activePreset = null;
       closeStationModal();
-      mobilePlayer?.close();
+      mobilePlayer?.close({ skipHistoryBack: true });
       switchView('discover', { pushHistory: false });
       syncControlsFromState();
-      fetchStations({ append: false, pushHistory: true });
+      if (wasSheetOpen) {
+        syncHistory({ push: false });
+      }
+      fetchStations({ append: false, pushHistory: !wasSheetOpen });
     }
   });
 
@@ -2470,10 +2480,18 @@ function bindEvents() {
   dom.installAppBtn.addEventListener('click', promptInstallPwa);
   dom.aboutInstallBtn.addEventListener('click', promptInstallPwa);
 
-  // Browser Back / Forward navigation support
+  // Browser Back / Forward navigation support (including Android edge-back for mobile sheet)
   window.addEventListener('popstate', () => {
+    if (ignoreNextSheetPopstate > 0) {
+      ignoreNextSheetPopstate -= 1;
+      return;
+    }
     if (mobilePlayer?.isOpen()) {
-      mobilePlayer.close();
+      if (dom.customModal.classList.contains('open')) closeCustomStationModal();
+      if (dom.aboutModal.classList.contains('open')) closeAboutModal();
+      if (dom.modal.classList.contains('open')) closeStationModal();
+      mobilePlayer.close({ fromPopstate: true });
+      return;
     }
     readQueryParamsIntoState();
     switchView(state.view, { pushHistory: false });
@@ -3214,6 +3232,33 @@ async function init() {
     onLockScroll: lockPageScroll,
     onUnlockScroll: () => {
       if (!isAnyModalOpen()) unlockPageScroll();
+    },
+    onOpenHistory: () => {
+      try {
+        window.history.pushState({ ondaSheet: true }, '', window.location.href);
+        sheetHistoryPushed = true;
+      } catch {
+        // Ignore restricted history environments
+      }
+    },
+    onCloseHistory: ({ fromPopstate = false, skipHistoryBack = false } = {}) => {
+      if (!sheetHistoryPushed) return;
+      sheetHistoryPushed = false;
+      if (fromPopstate) return;
+      if (skipHistoryBack) {
+        try {
+          if (window.history.state?.ondaSheet) {
+            window.history.replaceState(null, '', window.location.href);
+          }
+        } catch {
+          // Ignore
+        }
+        return;
+      }
+      if (window.history.state?.ondaSheet) {
+        ignoreNextSheetPopstate += 1;
+        window.history.back();
+      }
     },
   });
 
