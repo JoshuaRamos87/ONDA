@@ -51,8 +51,8 @@ const PIP_WIDGET_CSS = `
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    gap: 8px;
-    padding: 11px 13px 10px;
+    gap: 10px;
+    padding: 12px 14px 11px;
     background: var(--deck-bg);
     color: var(--deck-ink);
   }
@@ -88,12 +88,25 @@ const PIP_WIDGET_CSS = `
 
   .pip-tech {
     font-family: var(--font-mono);
-    font-size: 0.64rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.03em;
     color: var(--deck-ink-muted);
+    background: var(--deck-surface);
+    border: 1px solid var(--deck-border);
+    border-radius: var(--radius-pill);
+    padding: 2px 7px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 135px;
+  }
+
+  #pip-dock-btn {
+    opacity: 0.72;
+  }
+
+  #pip-dock-btn:hover {
+    opacity: 1;
   }
 
   .pip-sleep-badge {
@@ -204,21 +217,35 @@ const PIP_WIDGET_CSS = `
   }
 
   .pip-controls-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pip-transport-core {
+    justify-self: center;
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 10px;
   }
 
-  .pip-transport {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  .pip-side-btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  #pip-surprise-btn {
+    justify-self: start;
+  }
+
+  #pip-fav-btn {
+    justify-self: end;
   }
 
   .pip-btn {
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     border: 1px solid transparent;
     background: transparent;
@@ -254,8 +281,8 @@ const PIP_WIDGET_CSS = `
   }
 
   .pip-play-btn {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
     border-radius: 50%;
     border: none;
     background: var(--accent);
@@ -283,18 +310,59 @@ const PIP_WIDGET_CSS = `
   .pip-vu-wrap {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 7px;
+    gap: 7px;
+    padding: 4px 8px;
     border-radius: var(--radius-sm);
     background: var(--deck-surface);
     border: 1px solid var(--deck-border);
     flex-shrink: 0;
   }
 
-  #pip-vu-canvas {
-    display: block;
-    width: 46px;
-    height: 16px;
+  .pip-vu-bars {
+    --vu-scale: 1;
+    display: flex;
+    align-items: flex-end;
+    gap: 2.5px;
+    height: 15px;
+  }
+
+  .pip-vu-bars span {
+    width: 2.5px;
+    height: 100%;
+    border-radius: 1.5px;
+    background: rgba(229, 223, 211, 0.25);
+    transform-origin: bottom;
+    transform: scaleY(0.18);
+    transition: background-color 0.2s ease, transform 0.2s ease;
+  }
+
+  .pip-vu-bars[data-state="playing"] span {
+    background: linear-gradient(to top, #e5dfd3 0%, #e5dfd3 62%, var(--accent-bright) 100%);
+    animation: pip-vu-bounce var(--dur, 0.55s) ease-in-out var(--delay, 0s) infinite alternate;
+  }
+
+  .pip-vu-bars[data-state="loading"] span {
+    background: #f6b73c;
+    animation: pip-vu-load 0.9s ease-in-out var(--delay, 0s) infinite alternate;
+  }
+
+  .pip-vu-bars span:nth-child(1) { --dur: 0.52s; --delay: -0.10s; --peak: 0.65; }
+  .pip-vu-bars span:nth-child(2) { --dur: 0.44s; --delay: -0.32s; --peak: 0.88; }
+  .pip-vu-bars span:nth-child(3) { --dur: 0.60s; --delay: -0.18s; --peak: 0.96; }
+  .pip-vu-bars span:nth-child(4) { --dur: 0.48s; --delay: -0.45s; --peak: 1.00; }
+  .pip-vu-bars span:nth-child(5) { --dur: 0.56s; --delay: -0.22s; --peak: 0.92; }
+  .pip-vu-bars span:nth-child(6) { --dur: 0.42s; --delay: -0.38s; --peak: 0.98; }
+  .pip-vu-bars span:nth-child(7) { --dur: 0.58s; --delay: -0.14s; --peak: 0.82; }
+  .pip-vu-bars span:nth-child(8) { --dur: 0.50s; --delay: -0.29s; --peak: 0.62; }
+
+  @keyframes pip-vu-bounce {
+    0% { transform: scaleY(0.2); }
+    100% { transform: scaleY(calc(var(--peak, 0.85) * var(--vu-scale, 1))); }
+  }
+
+  @keyframes pip-vu-load {
+    0% { transform: scaleY(0.22); opacity: 0.55; }
+    100% { transform: scaleY(0.58); opacity: 1; }
   }
 
   .pip-timer {
@@ -325,8 +393,8 @@ const PIP_WIDGET_CSS = `
   .pip-volume-slider {
     -webkit-appearance: none;
     appearance: none;
-    width: 78px;
-    flex: 0 0 78px;
+    width: 76px;
+    flex: 0 0 76px;
     height: 4px;
     border-radius: 99px;
     background: var(--deck-border);
@@ -363,13 +431,13 @@ const PIP_WIDGET_CSS = `
       max-width: 96px;
     }
 
-    .pip-transport {
+    .pip-transport-core {
       gap: 6px;
     }
 
     .pip-volume-slider {
-      width: 68px;
-      flex: 0 0 68px;
+      width: 64px;
+      flex: 0 0 64px;
     }
 
     .pip-volume-pct {
@@ -379,12 +447,12 @@ const PIP_WIDGET_CSS = `
 
   @media (max-width: 245px) {
     .pip-volume-slider {
-      width: 54px;
-      flex: 0 0 54px;
+      width: 52px;
+      flex: 0 0 52px;
     }
 
-    #pip-vu-canvas {
-      width: 36px;
+    .pip-vu-bars span:nth-child(n+6) {
+      display: none;
     }
 
     .pip-timer {
@@ -457,11 +525,6 @@ function buildMiniTunerMarkup() {
           <div class="pip-title" id="pip-title">No station selected</div>
           <div class="pip-subtitle" id="pip-subtitle">Press Surprise Me or pick a station</div>
         </div>
-        <button type="button" id="pip-fav-btn" class="pip-btn" aria-label="Save current station" title="Save to favorites" disabled>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
-          </svg>
-        </button>
       </div>
 
       <div class="pip-error" id="pip-error" role="alert">
@@ -470,16 +533,16 @@ function buildMiniTunerMarkup() {
       </div>
 
       <div class="pip-controls-row">
-        <div class="pip-transport">
-          <button type="button" id="pip-surprise-btn" class="pip-btn" aria-label="Tune into a random live station" title="Surprise Me (R)">
-            <svg id="pip-surprise-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
-              <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
-              <line x1="4" y1="4" x2="9" y2="9"/>
-            </svg>
-            <span id="pip-surprise-spinner" class="spinner" style="display:none;width:14px;height:14px" aria-hidden="true"></span>
-          </button>
+        <button type="button" id="pip-surprise-btn" class="pip-btn pip-side-btn" aria-label="Tune into a random live station" title="Surprise Me (R)">
+          <svg id="pip-surprise-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+            <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
+            <line x1="4" y1="4" x2="9" y2="9"/>
+          </svg>
+          <span id="pip-surprise-spinner" class="spinner" style="display:none;width:14px;height:14px" aria-hidden="true"></span>
+        </button>
 
+        <div class="pip-transport-core">
           <button type="button" id="pip-prev-btn" class="pip-btn" aria-label="Previous station" title="Previous station ([)" disabled>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
@@ -487,10 +550,10 @@ function buildMiniTunerMarkup() {
           </button>
 
           <button type="button" id="pip-play-btn" class="pip-play-btn" aria-label="Play or pause" title="Play / Pause (Space)" disabled>
-            <svg id="pip-icon-play" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <svg id="pip-icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M8 5v14l11-7z"/>
             </svg>
-            <svg id="pip-icon-pause" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" style="display:none" aria-hidden="true">
+            <svg id="pip-icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none" aria-hidden="true">
               <path d="M6 5h4v14H6zm8 0h4v14h-4z"/>
             </svg>
             <span id="pip-icon-spinner" class="spinner" style="display:none;width:16px;height:16px" aria-hidden="true"></span>
@@ -502,6 +565,12 @@ function buildMiniTunerMarkup() {
             </svg>
           </button>
         </div>
+
+        <button type="button" id="pip-fav-btn" class="pip-btn pip-side-btn" aria-label="Save current station" title="Save to favorites" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+          </svg>
+        </button>
       </div>
 
       <div class="pip-footer-row">
@@ -521,7 +590,10 @@ function buildMiniTunerMarkup() {
         </div>
 
         <div class="pip-vu-wrap" aria-hidden="true">
-          <canvas id="pip-vu-canvas" width="46" height="16"></canvas>
+          <div class="pip-vu-bars" id="pip-vu-bars" data-state="idle">
+            <span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span>
+          </div>
           <span class="pip-timer" id="pip-timer">00:00</span>
         </div>
       </div>
@@ -539,12 +611,8 @@ const IDLE_ART_SVG = `
 export function createMiniTunerController(deps) {
   let pipWindow = null;
   let pipDom = null;
-  let pipRaf = null;
   let isOpening = false;
   let surpriseLoading = false;
-
-  const vuBars = new Array(10).fill(0.08);
-  const vuTargets = new Array(10).fill(0.08);
 
   function isOpen() {
     return Boolean(pipWindow && !pipWindow.closed);
@@ -585,103 +653,7 @@ export function createMiniTunerController(deps) {
     targetHead.appendChild(styleEl);
   }
 
-  function stopVuLoop() {
-    if (pipRaf && pipWindow && !pipWindow.closed) {
-      pipWindow.cancelAnimationFrame(pipRaf);
-    }
-    pipRaf = null;
-  }
-
-  function startVuLoop(win, canvas) {
-    stopVuLoop();
-    const ctx = canvas?.getContext('2d');
-    if (!ctx) return;
-
-    let frame = 0;
-    let peakColor = '#ff5733';
-    const refreshPeakColor = () => {
-      try {
-        const val = win
-          .getComputedStyle(win.document.documentElement)
-          .getPropertyValue('--accent-bright')
-          .trim();
-        if (val) peakColor = val;
-      } catch {
-        // Keep fallback color
-      }
-    };
-    refreshPeakColor();
-
-    const render = () => {
-      if (!isOpen() || win !== pipWindow) {
-        pipRaf = null;
-        return;
-      }
-
-      frame += 1;
-      if (frame % 30 === 0) refreshPeakColor();
-
-      const width = canvas.width;
-      const height = canvas.height;
-      ctx.clearRect(0, 0, width, height);
-
-      const { player } = deps;
-      const isPlaying =
-        player.status === 'playing' && !player.audio.muted && player.audio.volume > 0.01;
-      const isLoading = player.status === 'loading';
-      const energy = isPlaying ? 0.35 + player.audio.volume * 0.65 : 0;
-
-      const count = vuBars.length;
-      const gap = 2;
-      const barW = Math.floor((width - gap * (count - 1)) / count);
-
-      if (frame % 6 === 0) {
-        for (let i = 0; i < count; i++) {
-          if (isPlaying) {
-            const centerBias = 1 - Math.abs(i - (count - 1) / 2) / (count * 0.72);
-            vuTargets[i] = Math.min(
-              1,
-              Math.max(0.14, (Math.random() * 0.85 + 0.15) * centerBias * energy)
-            );
-          } else if (isLoading) {
-            vuTargets[i] = (Math.sin(frame * 0.14 + i * 0.55) + 1) * 0.25 + 0.12;
-          } else {
-            vuTargets[i] = 0.09;
-          }
-        }
-      }
-
-      for (let i = 0; i < count; i++) {
-        vuBars[i] += (vuTargets[i] - vuBars[i]) * 0.22;
-        const barH = Math.max(2, Math.round(vuBars[i] * height));
-        const x = i * (barW + gap);
-        const y = height - barH;
-
-        if (isPlaying) {
-          ctx.fillStyle = vuBars[i] > 0.78 ? peakColor : '#e5dfd3';
-        } else if (isLoading) {
-          ctx.fillStyle = '#f6b73c';
-        } else {
-          ctx.fillStyle = 'rgba(229, 223, 211, 0.24)';
-        }
-
-        ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') {
-          ctx.roundRect(x, y, barW, barH, 1.5);
-        } else {
-          ctx.rect(x, y, barW, barH);
-        }
-        ctx.fill();
-      }
-
-      pipRaf = win.requestAnimationFrame(render);
-    };
-
-    pipRaf = win.requestAnimationFrame(render);
-  }
-
   function handlePipClose() {
-    stopVuLoop();
     pipDom = null;
     pipWindow = null;
     deps.onOpenStateChange?.(false);
@@ -761,7 +733,7 @@ export function createMiniTunerController(deps) {
       iconPlay: doc.getElementById('pip-icon-play'),
       iconPause: doc.getElementById('pip-icon-pause'),
       iconSpinner: doc.getElementById('pip-icon-spinner'),
-      vuCanvas: doc.getElementById('pip-vu-canvas'),
+      vuBars: doc.getElementById('pip-vu-bars'),
       timer: doc.getElementById('pip-timer'),
       muteBtn: doc.getElementById('pip-mute-btn'),
       volOn: doc.getElementById('pip-vol-on'),
@@ -788,7 +760,7 @@ export function createMiniTunerController(deps) {
       // Must be called immediately before any other await to preserve user activation
       win = await window.documentPictureInPicture.requestWindow({
         width: 348,
-        height: 222,
+        height: 226,
       });
     } catch {
       isOpening = false;
@@ -808,7 +780,6 @@ export function createMiniTunerController(deps) {
 
     pipDom = queryPipDom(doc);
     bindPipEvents(win, doc);
-    startVuLoop(win, pipDom.vuCanvas);
 
     syncPlayback(deps.player.getState());
     setSurpriseLoading(surpriseLoading);
@@ -869,6 +840,20 @@ export function createMiniTunerController(deps) {
     pipDom.volMuted.style.display = muted || volume === 0 ? 'block' : 'none';
     pipDom.volumePct.textContent =
       muted || volume === 0 ? 'MUTE' : `${Math.round(volume * 100)}%`;
+
+    if (pipDom.vuBars) {
+      const vuState =
+        status === 'playing' && !muted && volume > 0.01
+          ? 'playing'
+          : status === 'loading'
+          ? 'loading'
+          : 'idle';
+      pipDom.vuBars.dataset.state = vuState;
+      pipDom.vuBars.style.setProperty(
+        '--vu-scale',
+        String((0.45 + Math.max(0, Math.min(1, Number(volume) || 0)) * 0.55).toFixed(2))
+      );
+    }
 
     syncTick(pState);
 
