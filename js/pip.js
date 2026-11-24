@@ -206,14 +206,14 @@ const PIP_WIDGET_CSS = `
   .pip-controls-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     gap: 10px;
   }
 
   .pip-transport {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
   }
 
   .pip-btn {
@@ -283,8 +283,8 @@ const PIP_WIDGET_CSS = `
   .pip-vu-wrap {
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 4px 8px;
+    gap: 6px;
+    padding: 3px 7px;
     border-radius: var(--radius-sm);
     background: var(--deck-surface);
     border: 1px solid var(--deck-border);
@@ -293,30 +293,40 @@ const PIP_WIDGET_CSS = `
 
   #pip-vu-canvas {
     display: block;
-    width: 54px;
-    height: 18px;
+    width: 46px;
+    height: 16px;
   }
 
   .pip-timer {
     font-family: var(--font-mono);
-    font-size: 0.68rem;
+    font-size: 0.66rem;
     color: var(--deck-ink-muted);
-    min-width: 40px;
+    min-width: 36px;
     text-align: right;
   }
 
-  .pip-volume-row {
+  .pip-footer-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
-    padding-top: 2px;
+    padding-top: 6px;
     border-top: 1px solid var(--deck-border);
+    min-width: 0;
+  }
+
+  .pip-volume-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
 
   .pip-volume-slider {
     -webkit-appearance: none;
     appearance: none;
-    flex: 1;
+    width: 78px;
+    flex: 0 0 78px;
     height: 4px;
     border-radius: 99px;
     background: var(--deck-border);
@@ -339,8 +349,74 @@ const PIP_WIDGET_CSS = `
     font-family: var(--font-mono);
     font-size: 0.65rem;
     color: var(--deck-ink-muted);
-    min-width: 34px;
-    text-align: right;
+    min-width: 32px;
+    text-align: left;
+  }
+
+  @media (max-width: 315px) {
+    .pip-shell {
+      padding: 9px 10px 8px;
+      gap: 6px;
+    }
+
+    .pip-tech {
+      max-width: 96px;
+    }
+
+    .pip-transport {
+      gap: 6px;
+    }
+
+    .pip-volume-slider {
+      width: 68px;
+      flex: 0 0 68px;
+    }
+
+    .pip-volume-pct {
+      display: none;
+    }
+  }
+
+  @media (max-width: 245px) {
+    .pip-volume-slider {
+      width: 54px;
+      flex: 0 0 54px;
+    }
+
+    #pip-vu-canvas {
+      width: 36px;
+    }
+
+    .pip-timer {
+      display: none;
+    }
+  }
+
+  @media (max-height: 185px) {
+    .pip-shell {
+      padding: 7px 10px;
+      gap: 4px;
+    }
+
+    .pip-art {
+      width: 38px;
+      height: 38px;
+    }
+
+    .pip-play-btn {
+      width: 34px;
+      height: 34px;
+    }
+
+    .pip-footer-row {
+      padding-top: 4px;
+    }
+  }
+
+  @media (max-height: 150px) {
+    .pip-subtitle {
+      display: none;
+    }
   }
 `;
 
@@ -426,26 +502,28 @@ function buildMiniTunerMarkup() {
             </svg>
           </button>
         </div>
-
-        <div class="pip-vu-wrap" aria-hidden="true">
-          <canvas id="pip-vu-canvas" width="54" height="18"></canvas>
-          <span class="pip-timer" id="pip-timer">00:00</span>
-        </div>
       </div>
 
-      <div class="pip-volume-row">
-        <button type="button" id="pip-mute-btn" class="pip-btn pip-btn-sm" aria-label="Mute or unmute" title="Mute (M)">
-          <svg id="pip-vol-on" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-          </svg>
-          <svg id="pip-vol-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-            <line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>
-          </svg>
-        </button>
-        <input type="range" id="pip-volume-slider" class="pip-volume-slider" aria-label="Volume" min="0" max="1" step="0.02" value="0.82">
-        <span class="pip-volume-pct" id="pip-volume-pct">82%</span>
+      <div class="pip-footer-row">
+        <div class="pip-volume-group">
+          <button type="button" id="pip-mute-btn" class="pip-btn pip-btn-sm" aria-label="Mute or unmute" title="Mute (M)">
+            <svg id="pip-vol-on" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+            </svg>
+            <svg id="pip-vol-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none" aria-hidden="true">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>
+            </svg>
+          </button>
+          <input type="range" id="pip-volume-slider" class="pip-volume-slider" aria-label="Volume" min="0" max="1" step="0.02" value="0.82">
+          <span class="pip-volume-pct" id="pip-volume-pct">82%</span>
+        </div>
+
+        <div class="pip-vu-wrap" aria-hidden="true">
+          <canvas id="pip-vu-canvas" width="46" height="16"></canvas>
+          <span class="pip-timer" id="pip-timer">00:00</span>
+        </div>
       </div>
     </main>
   `;
@@ -709,7 +787,7 @@ export function createMiniTunerController(deps) {
     try {
       // Must be called immediately before any other await to preserve user activation
       win = await window.documentPictureInPicture.requestWindow({
-        width: 364,
+        width: 348,
         height: 222,
       });
     } catch {
